@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{{ page_title }}</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+    <div class="shell">
+        <header class="topbar">
+            <div>
+                <p class="eyebrow">contract-compliance-mvp</p>
+                <h1 class="brand">I2AI Compliance Lab</h1>
+            </div>
+            <nav class="topnav">
+                <a href="/">总览</a>
+                <a href="/tasks">任务</a>
+                <a href="/reviews/demo-001">审查页</a>
+                <a href="/api/health">健康检查</a>
+            </nav>
+        </header>
+        <main>
+            {% block content %}{% endblock %}
+        </main>
+    </div>
+</body>
+</html>

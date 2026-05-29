@@ -1,0 +1,6 @@
+services:
+  compliance-api:
+    build:
+      context: ../../apps/api
+    ports:
+      - "8000:8000"

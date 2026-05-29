@@ -1,0 +1,9 @@
+services:
+  compliance-api:
+    image: ghcr.io/dlv2008/contract-compliance-mvp-api:${IMAGE_TAG:-latest}
+    container_name: compliance-api
+    restart: unless-stopped
+    env_file:
+      - /opt/stacks/shared/env/compliance-app.env
+    ports:
+      - "127.0.0.1:19080:8000"

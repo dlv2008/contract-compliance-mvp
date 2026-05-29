@@ -1,0 +1,42 @@
+{
+  "sample_id": "pur_b_001",
+  "meta": {
+    "contract_type": "procurement_contract",
+    "expected_overall_risk": "red",
+    "expected_decision": "manual_review"
+  },
+  "fields": [
+    {"field": "amount_total", "value": 365000, "status": "present", "evidence_clause_ids": ["C003"]},
+    {"field": "invoice.type", "value": "增值税专用发票", "status": "present", "evidence_clause_ids": ["C004"]},
+    {"field": "invoice.tax_rate", "value": null, "status": "missing", "evidence_clause_ids": []},
+    {"field": "payment.prepay_ratio", "value": 40, "status": "present", "evidence_clause_ids": ["C005"]},
+    {"field": "acceptance.required", "value": true, "status": "present", "evidence_clause_ids": ["C006"]},
+    {"field": "account.same_as_counterparty", "value": false, "status": "present", "evidence_clause_ids": ["C009"]}
+  ],
+  "risks": [
+    {
+      "rule_id": "FIN-PUR-002",
+      "risk_level": "yellow",
+      "hit": true,
+      "message": "缺失明确税率条款",
+      "contract_evidence_clause_ids": ["C004"],
+      "policy_reference_ids": ["POLICY-FUND-002"]
+    },
+    {
+      "rule_id": "FIN-PUR-003",
+      "risk_level": "red",
+      "hit": true,
+      "message": "采购预付款比例超过30%",
+      "contract_evidence_clause_ids": ["C005"],
+      "policy_reference_ids": ["POLICY-PUR-002"]
+    },
+    {
+      "rule_id": "FIN-PUR-005",
+      "risk_level": "red",
+      "hit": true,
+      "message": "收款账户名称与签约主体不一致",
+      "contract_evidence_clause_ids": ["C009", "C001"],
+      "policy_reference_ids": ["POLICY-FUND-005", "POLICY-PUR-005"]
+    }
+  ]
+}

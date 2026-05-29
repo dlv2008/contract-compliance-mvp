@@ -1,0 +1,17 @@
+{
+  "sample_id": "svc_x_001",
+  "fields": [
+    {
+      "field": "contract_type",
+      "value": "service_contract",
+      "status": "present",
+      "evidence_clause_ids": ["C001"]
+    },
+    {
+      "field": "invoice.tax_rate",
+      "value": null,
+      "status": "missing",
+      "evidence_clause_ids": []
+    }
+  ]
+}

@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="hero">
+    <div class="hero-copy">
+        <p class="eyebrow">MVP UI Preview</p>
+        <h2>{{ data.headline.title }}</h2>
+        <p class="hero-text">{{ data.headline.subtitle }}</p>
+        <div class="badge-row">
+            {% for badge in data.headline.badges %}
+            <span class="badge">{{ badge }}</span>
+            {% endfor %}
+        </div>
+    </div>
+    <div class="hero-panel">
+        <p class="panel-kicker">演示重点</p>
+        <ul class="simple-list">
+            {% for item in data.timeline %}
+            <li>{{ item }}</li>
+            {% endfor %}
+        </ul>
+    </div>
+</section>
+
+<section class="metric-grid">
+    {% for metric in data.metrics %}
+    <article class="metric-card tone-{{ metric.tone }}">
+        <p>{{ metric.label }}</p>
+        <strong>{{ metric.value }}</strong>
+    </article>
+    {% endfor %}
+</section>
+
+<section class="dashboard-grid">
+    <article class="panel">
+        <div class="panel-head">
+            <h3>任务队列</h3>
+            <a href="/reviews/demo-001">打开样例任务</a>
+        </div>
+        <div class="task-table">
+            {% for task in data.tasks %}
+            <a class="task-row" href="/reviews/demo-001">
+                <div>
+                    <strong>{{ task.name }}</strong>
+                    <p>{{ task.summary }}</p>
+                </div>
+                <div class="task-meta">
+                    <span class="pill">{{ task.status }}</span>
+                    <span class="risk-chip">{{ task.risk }}</span>
+                </div>
+            </a>
+            {% endfor %}
+        </div>
+    </article>
+
+    <article class="panel">
+        <div class="panel-head">
+            <h3>页面信息架构</h3>
+        </div>
+        <ol class="ordered-list">
+            <li>上传合同并创建任务</li>
+            <li>任务列表展示状态和风险级别</li>
+            <li>审查结果页按条款、证据和风险三栏联动</li>
+            <li>人工复核覆盖系统结论</li>
+            <li>最终导出审查报告</li>
+        </ol>
+    </article>
+</section>
+{% endblock %}

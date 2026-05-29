@@ -1,0 +1,50 @@
+{
+  "sample_id": "pur_c_001",
+  "meta": {
+    "contract_type": "procurement_contract",
+    "expected_overall_risk": "red",
+    "expected_decision": "manual_review"
+  },
+  "fields": [
+    {"field": "amount_total", "value": 500000, "status": "present", "evidence_clause_ids": ["C004"]},
+    {"field": "invoice.type", "value": null, "status": "missing", "evidence_clause_ids": []},
+    {"field": "term.auto_renewal", "value": true, "status": "present", "evidence_clause_ids": ["C003"]},
+    {"field": "acceptance.required", "value": true, "status": "present", "evidence_clause_ids": ["C006"]},
+    {"field": "supplement.priority_clause", "value": true, "status": "present", "evidence_clause_ids": ["C008"]},
+    {"field": "dispute.location", "value": "乙方所在地人民法院", "status": "present", "evidence_clause_ids": ["C007"]}
+  ],
+  "risks": [
+    {
+      "rule_id": "FIN-PUR-001",
+      "risk_level": "red",
+      "hit": true,
+      "message": "缺失发票条款",
+      "contract_evidence_clause_ids": [],
+      "policy_reference_ids": ["POLICY-FUND-002", "POLICY-PUR-001"]
+    },
+    {
+      "rule_id": "FIN-PUR-007",
+      "risk_level": "red",
+      "hit": true,
+      "message": "存在自动续约条款，但未写审批前提",
+      "contract_evidence_clause_ids": ["C003"],
+      "policy_reference_ids": ["POLICY-PUR-006", "POLICY-REV-004"]
+    },
+    {
+      "rule_id": "FIN-PUR-008",
+      "risk_level": "red",
+      "hit": true,
+      "message": "业务联系人确认的补充约定被约定为优先条款",
+      "contract_evidence_clause_ids": ["C008"],
+      "policy_reference_ids": ["POLICY-REV-006"]
+    },
+    {
+      "rule_id": "FIN-PUR-009",
+      "risk_level": "yellow",
+      "hit": true,
+      "message": "争议解决地约定为乙方所在地",
+      "contract_evidence_clause_ids": ["C007"],
+      "policy_reference_ids": ["POLICY-REV-005"]
+    }
+  ]
+}

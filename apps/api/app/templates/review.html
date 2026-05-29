@@ -1,0 +1,92 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="review-header">
+    <div>
+        <p class="eyebrow">{{ data.task.contract_type }}</p>
+        <h2>{{ data.task.name }}</h2>
+        <p class="hero-text">当前任务处于 {{ data.task.status }}，系统已生成可人工覆盖的审查结果。</p>
+    </div>
+    <div class="review-state">
+        <span class="state-danger">{{ data.task.risk }}</span>
+        <span class="state-outline">任务编号 {{ data.task.id }}</span>
+    </div>
+</section>
+
+<section class="metric-grid">
+    {% for card in data.summary_cards %}
+    <article class="metric-card tone-neutral">
+        <p>{{ card.label }}</p>
+        <strong>{{ card.value }}</strong>
+    </article>
+    {% endfor %}
+</section>
+
+<section class="workspace-grid">
+    <aside class="panel left-rail">
+        <div class="panel-head">
+            <h3>条款目录</h3>
+        </div>
+        <div class="clause-list">
+            {% for clause in data.clauses %}
+            <div class="clause-item clause-{{ clause.status }}">
+                <span>{{ clause.id }}</span>
+                <strong>{{ clause.title }}</strong>
+            </div>
+            {% endfor %}
+        </div>
+
+        <div class="field-block">
+            <h4>关键字段</h4>
+            {% for field in data.fields %}
+            <div class="field-row">
+                <span>{{ field.label }}</span>
+                <strong>{{ field.value }}</strong>
+            </div>
+            {% endfor %}
+        </div>
+    </aside>
+
+    <article class="panel contract-panel">
+        <div class="panel-head">
+            <h3>合同原文与证据定位</h3>
+        </div>
+        {% for excerpt in data.contract_excerpt %}
+        <section class="excerpt-block {% if excerpt.id == 'C003' %}excerpt-hot{% endif %}">
+            <div class="excerpt-head">
+                <span>{{ excerpt.id }}</span>
+                <strong>{{ excerpt.title }}</strong>
+            </div>
+            <p>{{ excerpt.text }}</p>
+        </section>
+        {% endfor %}
+    </article>
+
+    <aside class="panel right-rail">
+        <div class="panel-head">
+            <h3>风险卡片</h3>
+        </div>
+        <div class="risk-stack">
+            {% for risk in data.risks %}
+            <article class="risk-card risk-{{ risk.level }}">
+                <div class="risk-top">
+                    <strong>{{ risk.title }}</strong>
+                    <span>{{ risk.rule }}</span>
+                </div>
+                <p>{{ risk.reason }}</p>
+                <dl class="risk-meta">
+                    <div>
+                        <dt>证据条款</dt>
+                        <dd>{{ risk.evidence }}</dd>
+                    </div>
+                    <div>
+                        <dt>制度依据</dt>
+                        <dd>{{ risk.policy }}</dd>
+                    </div>
+                </dl>
+                <p class="risk-action">{{ risk.action }}</p>
+            </article>
+            {% endfor %}
+        </div>
+    </aside>
+</section>
+{% endblock %}

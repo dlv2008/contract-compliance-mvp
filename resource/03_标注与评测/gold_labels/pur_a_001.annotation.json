@@ -1,0 +1,19 @@
+{
+  "sample_id": "pur_a_001",
+  "meta": {
+    "contract_type": "procurement_contract",
+    "expected_overall_risk": "green",
+    "expected_decision": "pass"
+  },
+  "fields": [
+    {"field": "amount_total", "value": 280000, "status": "present", "evidence_clause_ids": ["C003"]},
+    {"field": "invoice.type", "value": "增值税专用发票", "status": "present", "evidence_clause_ids": ["C004"]},
+    {"field": "invoice.tax_rate", "value": "13%", "status": "present", "evidence_clause_ids": ["C004"]},
+    {"field": "payment.prepay_ratio", "value": 30, "status": "present", "evidence_clause_ids": ["C005"]},
+    {"field": "acceptance.required", "value": true, "status": "present", "evidence_clause_ids": ["C006"]},
+    {"field": "warranty.present", "value": true, "status": "present", "evidence_clause_ids": ["C007"]},
+    {"field": "term.auto_renewal", "value": false, "status": "present", "evidence_clause_ids": ["C011"]},
+    {"field": "account.same_as_counterparty", "value": true, "status": "present", "evidence_clause_ids": ["C010"]}
+  ],
+  "risks": []
+}
