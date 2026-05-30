@@ -15,7 +15,11 @@ Key folders:
 - `docs`: operations notes, local WSL runbooks, and deployment decisions
 - `infra`: deployment assets kept for the later cloud phase
 - `resource`: Chinese sample contracts, policies, labels, and UI references
-- `infra_staging`: one-off scripts and temporary assets used during the 2026-05-28 server cleanup
+
+Repository hygiene:
+
+- one-off server cleanup scripts and staging duplicates are intentionally kept out of Git
+- real credentials must stay in local `.env` files or deployment secrets, never in tracked files
 
 Deferred public domains after the cloud hardware issue is solved:
 

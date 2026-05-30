@@ -15,6 +15,26 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Secret scan
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          hits="$(grep -RInE \
+            --exclude-dir=.git \
+            --exclude-dir=.venv \
+            --exclude-dir=__pycache__ \
+            --exclude-dir=.pytest_cache \
+            --exclude-dir=node_modules \
+            --exclude-dir=dist \
+            --exclude-dir=build \
+            '(sk-[A-Za-z0-9_-]{12,}|AKIA[0-9A-Z]{16}|BEGIN (RSA|OPENSSH|EC|DSA) PRIVATE KEY|password[[:space:]]*=[[:space:]]*\"[^\"]+\"|passwd[[:space:]]*=[[:space:]]*\"[^\"]+\"|api[_-]?key[[:space:]]*=[[:space:]]*\"[^\"]+\"|secret[[:space:]]*=[[:space:]]*\"[^\"]+\"|token[[:space:]]*=[[:space:]]*\"[^\"]+\")' \
+            . || true)"
+          if [ -n "$hits" ]; then
+            echo "Potential secret leakage detected:"
+            echo "$hits"
+            exit 1
+          fi
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -23,7 +43,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install pytest ruff httpx2
+          pip install pytest ruff httpx
 
       - name: Lint
         run: ruff check app tests

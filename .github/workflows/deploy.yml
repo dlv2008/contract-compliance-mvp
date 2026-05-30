@@ -45,8 +45,10 @@ jobs:
 
       - name: Deploy on server
         run: |
+          printf '%s\n' "${{ secrets.GHCR_PULL_TOKEN }}" | \
           ssh -p "${{ secrets.DEPLOY_PORT }}" "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}" \
-            "export IMAGE_TAG=${{ github.sha }} GHCR_PULL_TOKEN='${{ secrets.GHCR_PULL_TOKEN }}'; \
+            "read -r GHCR_PULL_TOKEN && \
+             export IMAGE_TAG=${{ github.sha }} && \
              echo \"\$GHCR_PULL_TOKEN\" | docker login ghcr.io -u dlv2008 --password-stdin && \
              cd /opt/stacks/compliance-app && \
              docker compose -f docker-compose.prod.yml pull && \

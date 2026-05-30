@@ -4,10 +4,10 @@
     <div>
         <p class="eyebrow">{{ data.task.contract_type }}</p>
         <h2>{{ data.task.name }}</h2>
-        <p class="hero-text">当前任务处于 {{ data.task.status }}，系统已生成可人工覆盖的审查结果。</p>
+        <p class="hero-text">当前任务处于 {{ data.task.status }}，系统已经完成字段抽取、规则命中和证据定位。</p>
     </div>
     <div class="review-state">
-        <span class="state-danger">{{ data.task.risk }}</span>
+        <span class="{{ data.task.state_class }}">{{ data.task.risk }}</span>
         <span class="state-outline">任务编号 {{ data.task.id }}</span>
     </div>
 </section>
@@ -51,7 +51,7 @@
             <h3>合同原文与证据定位</h3>
         </div>
         {% for excerpt in data.contract_excerpt %}
-        <section class="excerpt-block {% if excerpt.id == 'C003' %}excerpt-hot{% endif %}">
+        <section class="excerpt-block excerpt-{{ excerpt.status }}">
             <div class="excerpt-head">
                 <span>{{ excerpt.id }}</span>
                 <strong>{{ excerpt.title }}</strong>
@@ -66,6 +66,7 @@
             <h3>风险卡片</h3>
         </div>
         <div class="risk-stack">
+            {% if data.risks %}
             {% for risk in data.risks %}
             <article class="risk-card risk-{{ risk.level }}">
                 <div class="risk-top">
@@ -86,6 +87,37 @@
                 <p class="risk-action">{{ risk.action }}</p>
             </article>
             {% endfor %}
+            {% else %}
+            <div class="empty-state">
+                <strong>未命中风险</strong>
+                <p>这份合同暂未命中当前启用规则，但仍建议人工抽样复核。</p>
+            </div>
+            {% endif %}
+        </div>
+
+        <div class="status-block status-block-{{ data.ragflow.tone }}">
+            <div class="panel-head">
+                <h3>RAGFlow 状态</h3>
+            </div>
+            <p class="integration-status">{{ data.ragflow.status_label }}</p>
+            <p>{{ data.ragflow.detail }}</p>
+            <p class="endpoint">{{ data.ragflow.base_url }}</p>
+            {% if data.ragflow.datasets %}
+            <ul class="simple-list">
+                {% for dataset in data.ragflow.datasets %}
+                <li>{{ dataset }}</li>
+                {% endfor %}
+            </ul>
+            {% endif %}
+        </div>
+
+        <div class="status-block status-block-{{ data.llm.tone }}">
+            <div class="panel-head">
+                <h3>模型服务</h3>
+            </div>
+            <p class="integration-status">{{ data.llm.status_label }}</p>
+            <p>{{ data.llm.detail }}</p>
+            <p class="endpoint">{{ data.llm.model }} · {{ data.llm.chat_completions_url }}</p>
         </div>
     </aside>
 </section>

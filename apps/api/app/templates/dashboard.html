@@ -2,7 +2,7 @@
 {% block content %}
 <section class="hero">
     <div class="hero-copy">
-        <p class="eyebrow">MVP UI Preview</p>
+        <p class="eyebrow">MVP Runtime</p>
         <h2>{{ data.headline.title }}</h2>
         <p class="hero-text">{{ data.headline.subtitle }}</p>
         <div class="badge-row">
@@ -12,12 +12,30 @@
         </div>
     </div>
     <div class="hero-panel">
-        <p class="panel-kicker">演示重点</p>
+        <p class="panel-kicker">服务状态</p>
+        <div class="service-status-row">
+            <div>
+                <span class="service-dot service-dot-{{ data.ragflow.tone }}"></span>
+                <strong>RAGFlow {{ data.ragflow.status_label }}</strong>
+            </div>
+            <p>{{ data.ragflow.detail }}</p>
+            <p class="endpoint">{{ data.ragflow.base_url }}</p>
+        </div>
+        <div class="service-status-row">
+            <div>
+                <span class="service-dot service-dot-{{ data.llm.tone }}"></span>
+                <strong>LLM {{ data.llm.status_label }}</strong>
+            </div>
+            <p>{{ data.llm.detail }}</p>
+            <p class="endpoint">{{ data.llm.model }} · {{ data.llm.chat_completions_url }}</p>
+        </div>
+        {% if data.ragflow.datasets %}
         <ul class="simple-list">
-            {% for item in data.timeline %}
-            <li>{{ item }}</li>
+            {% for dataset in data.ragflow.datasets %}
+            <li>{{ dataset }}</li>
             {% endfor %}
         </ul>
+        {% endif %}
     </div>
 </section>
 
@@ -34,34 +52,60 @@
     <article class="panel">
         <div class="panel-head">
             <h3>任务队列</h3>
-            <a href="/reviews/demo-001">打开样例任务</a>
+            <span class="panel-note">首次打开会自动导入样本合同，也可以继续上传新合同。</span>
         </div>
         <div class="task-table">
+            {% if data.tasks %}
             {% for task in data.tasks %}
-            <a class="task-row" href="/reviews/demo-001">
+            <a class="task-row" href="/reviews/{{ task.id }}">
                 <div>
-                    <strong>{{ task.name }}</strong>
+                    <div class="task-row-top">
+                        <strong>{{ task.name }}</strong>
+                        <span class="task-time">{{ task.created_at }}</span>
+                    </div>
                     <p>{{ task.summary }}</p>
                 </div>
                 <div class="task-meta">
                     <span class="pill">{{ task.status }}</span>
-                    <span class="risk-chip">{{ task.risk }}</span>
+                    <span class="risk-chip risk-chip-{{ task.risk_tone }}">{{ task.risk }}</span>
                 </div>
             </a>
             {% endfor %}
+            {% else %}
+            <div class="empty-state">
+                <strong>还没有审查任务</strong>
+                <p>上传一份合同文本后，系统会自动创建任务并跳转到审查结果页。</p>
+            </div>
+            {% endif %}
         </div>
     </article>
 
     <article class="panel">
         <div class="panel-head">
-            <h3>页面信息架构</h3>
+            <h3>新建审查任务</h3>
+        </div>
+        <form class="upload-form" action="/tasks/create" method="post" enctype="multipart/form-data">
+            <label class="form-row">
+                <span>任务名称</span>
+                <input class="input" type="text" name="contract_name" placeholder="留空则使用文件标题或文件名" />
+            </label>
+            <label class="form-row">
+                <span>合同文件</span>
+                <input class="input input-file" type="file" name="file" accept=".md,.txt,text/plain,text/markdown" required />
+            </label>
+            <button class="button-primary" type="submit">上传并开始审查</button>
+            <p class="form-hint">当前版本先支持 UTF-8 / GBK 编码的 `.md`、`.txt` 合同文本。</p>
+        </form>
+
+        <div class="panel-spacer"></div>
+
+        <div class="panel-head">
+            <h3>处理链路</h3>
         </div>
         <ol class="ordered-list">
-            <li>上传合同并创建任务</li>
-            <li>任务列表展示状态和风险级别</li>
-            <li>审查结果页按条款、证据和风险三栏联动</li>
-            <li>人工复核覆盖系统结论</li>
-            <li>最终导出审查报告</li>
+            {% for item in data.timeline %}
+            <li>{{ item }}</li>
+            {% endfor %}
         </ol>
     </article>
 </section>

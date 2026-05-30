@@ -1,6 +1,0 @@
-sample_id,file_name,contract_type,expected_overall_risk,expected_decision,label_file
-svc_a_001,服务合同-样本A-标准版.md,service_contract,green,pass,gold_labels/svc_a_001.annotation.json
-svc_b_001,服务合同-样本B-高预付款风险版.md,service_contract,red,manual_review,gold_labels/svc_b_001.annotation.json
-pur_a_001,采购合同-样本A-标准版.md,procurement_contract,green,pass,gold_labels/pur_a_001.annotation.json
-pur_b_001,采购合同-样本B-收款账户不一致风险版.md,procurement_contract,red,manual_review,gold_labels/pur_b_001.annotation.json
-pur_c_001,采购合同-样本C-自动续约与发票缺失风险版.md,procurement_contract,red,manual_review,gold_labels/pur_c_001.annotation.json

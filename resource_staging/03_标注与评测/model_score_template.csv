@@ -1,5 +1,0 @@
-run_id,model_provider,model_name,sample_id,field_accuracy,missing_field_recall,json_valid,stability_score,explanation_score,evidence_accuracy,extract_seconds,total_seconds,resource_score,total_score,reviewer,notes
-run_001,qwen,qwen-32b,svc_a_001,,,,,,,,,,,, 
-run_002,minimax,minimax-private,svc_a_001,,,,,,,,,,,, 
-run_003,qwen,qwen-32b,svc_b_001,,,,,,,,,,,, 
-run_004,minimax,minimax-private,svc_b_001,,,,,,,,,,,, 
