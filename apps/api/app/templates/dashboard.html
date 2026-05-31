@@ -48,6 +48,66 @@
     {% endfor %}
 </section>
 
+<section class="connection-grid">
+    <article class="panel probe-panel">
+        <div class="panel-head">
+            <div>
+                <h3>大模型可用性检查</h3>
+                <p class="panel-subtitle">{{ data.llm.title }}</p>
+            </div>
+            <span class="probe-status probe-status-{{ data.llm.tone }}">
+                {{ data.llm.status_label }}
+            </span>
+        </div>
+
+        <div class="probe-summary-grid">
+            <div class="probe-summary-card">
+                <span>Provider</span>
+                <strong>MiniMax</strong>
+            </div>
+            <div class="probe-summary-card">
+                <span>Model</span>
+                <strong>{{ data.llm.model }}</strong>
+            </div>
+            <div class="probe-summary-card">
+                <span>Endpoint</span>
+                <strong>{{ data.llm.chat_completions_url }}</strong>
+            </div>
+        </div>
+
+        <div class="probe-action-row">
+            <button id="llm-probe-button" class="button-primary button-probe" type="button">
+                主动检测模型
+            </button>
+            <p class="probe-helper">{{ data.llm.detail }}</p>
+        </div>
+
+        <article id="llm-probe-result" class="probe-result probe-result-{{ data.llm.tone }}">
+            <div class="probe-result-head">
+                <strong id="llm-probe-title">{{ data.llm.title }}</strong>
+                <span id="llm-probe-badge" class="probe-badge">{{ data.llm.status_label }}</span>
+            </div>
+            <p id="llm-probe-message" class="probe-result-message">{{ data.llm.detail }}</p>
+            <dl id="llm-probe-details" class="probe-details">
+                <div>
+                    <dt>环境文件</dt>
+                    <dd>{{ data.llm.env_file_path or "未自动加载 .env" }}</dd>
+                </div>
+                <div>
+                    <dt>API Key</dt>
+                    <dd>{% if data.llm.api_key_present %}已配置{% else %}未配置{% endif %}</dd>
+                </div>
+                {% if data.llm.missing_fields %}
+                <div>
+                    <dt>缺失项</dt>
+                    <dd>{{ data.llm.missing_fields | join(", ") }}</dd>
+                </div>
+                {% endif %}
+            </dl>
+        </article>
+    </article>
+</section>
+
 <section class="dashboard-grid">
     <article class="panel">
         <div class="panel-head">
@@ -109,4 +169,109 @@
         </ol>
     </article>
 </section>
+
+<script>
+    (function () {
+        const button = document.getElementById("llm-probe-button");
+        const panel = document.getElementById("llm-probe-result");
+        const title = document.getElementById("llm-probe-title");
+        const badge = document.getElementById("llm-probe-badge");
+        const message = document.getElementById("llm-probe-message");
+        const details = document.getElementById("llm-probe-details");
+
+        if (!button || !panel || !title || !badge || !message || !details) {
+            return;
+        }
+
+        const badgeLabels = {
+            ok: "连接正常",
+            verified: "连接正常",
+            configured: "已配置",
+            not_configured: "待配置",
+            error: "探测失败",
+            checking: "检测中"
+        };
+
+        const toneByStatus = {
+            verified: "ok",
+            configured: "warn",
+            not_configured: "danger",
+            error: "danger",
+            checking: "warn"
+        };
+
+        function render(payload) {
+            const status = payload.status || "error";
+            const tone = toneByStatus[status] || "warn";
+            panel.className = `probe-result probe-result-${tone}`;
+            title.textContent = payload.title || "模型检查结果";
+            badge.textContent = badgeLabels[status] || "未知状态";
+            message.textContent = payload.detail || "未返回更多说明。";
+
+            const rows = [];
+            if (payload.env_file_path) {
+                rows.push(["环境文件", payload.env_file_path]);
+            }
+            rows.push(["API Key", payload.api_key_present ? "已配置" : "未配置"]);
+            if (payload.checked_at) {
+                rows.push(["检测时间", payload.checked_at]);
+            }
+            if (payload.latency_ms !== null && payload.latency_ms !== undefined) {
+                rows.push(["耗时", `${payload.latency_ms} ms`]);
+            }
+            if (payload.response_preview) {
+                rows.push(["返回预览", payload.response_preview]);
+            }
+            if (payload.error_detail) {
+                rows.push(["错误详情", payload.error_detail]);
+            }
+            if (payload.missing_fields && payload.missing_fields.length > 0) {
+                rows.push(["缺失项", payload.missing_fields.join(", ")]);
+            }
+
+            details.replaceChildren();
+            rows.forEach(function (row) {
+                const wrapper = document.createElement("div");
+                const dt = document.createElement("dt");
+                const dd = document.createElement("dd");
+                dt.textContent = row[0];
+                dd.textContent = row[1];
+                wrapper.appendChild(dt);
+                wrapper.appendChild(dd);
+                details.appendChild(wrapper);
+            });
+        }
+
+        button.addEventListener("click", async function () {
+            button.disabled = true;
+            button.textContent = "检测中...";
+            render({
+                status: "checking",
+                title: "正在检测模型可用性",
+                detail: "系统正在发起一次最小化请求。只有你点击按钮后，这一步才会真正执行。",
+                api_key_present: true
+            });
+
+            try {
+                const response = await fetch("/api/llm/check", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" }
+                });
+                const payload = await response.json();
+                render(payload);
+            } catch (err) {
+                render({
+                    status: "error",
+                    title: "模型探测失败",
+                    detail: "页面没有拿到服务端结果，请检查应用日志或网络连接。",
+                    api_key_present: true,
+                    error_detail: err instanceof Error ? err.message : String(err)
+                });
+            } finally {
+                button.disabled = false;
+                button.textContent = "主动检测模型";
+            }
+        });
+    }());
+</script>
 {% endblock %}

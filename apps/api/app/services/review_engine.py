@@ -240,16 +240,21 @@ def build_llm_payload(llm: LLMProbe) -> dict[str, Any]:
         tone = "warn"
         status_label = "已配置"
     else:
-        tone = "warn"
+        tone = "danger"
         status_label = "待配置"
     return {
         "base_url": llm.base_url,
         "chat_completions_url": llm.chat_completions_url,
         "model": llm.model,
+        "title": llm.title,
         "detail": llm.detail,
         "tone": tone,
         "status_label": status_label,
         "api_key_present": llm.api_key_present,
+        "configured": llm.configured,
+        "verified": llm.verified,
+        "env_file_path": llm.env_file_path,
+        "missing_fields": llm.missing_fields,
     }
 
 

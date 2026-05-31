@@ -9,6 +9,59 @@ from pathlib import Path
 APP_DIR = Path(__file__).resolve().parent
 API_ROOT = APP_DIR.parent
 REPO_ROOT = API_ROOT.parent.parent
+_LOADED_ENV_PATH: Path | None = None
+
+
+def _parse_env_line(raw_line: str) -> tuple[str, str] | None:
+    line = raw_line.strip()
+    if not line or line.startswith("#") or "=" not in line:
+        return None
+
+    key, value = line.split("=", 1)
+    key = key.strip()
+    value = value.strip()
+    if not key:
+        return None
+    if value and value[0] == value[-1] and value[0] in {'"', "'"}:
+        value = value[1:-1]
+    return key, value
+
+
+def _candidate_env_paths() -> list[Path]:
+    cwd = Path.cwd().resolve()
+    return [
+        cwd / ".env",
+        cwd.parent / ".env",
+        cwd.parent.parent / ".env",
+        REPO_ROOT / ".env",
+    ]
+
+
+def bootstrap_environment() -> Path | None:
+    global _LOADED_ENV_PATH
+
+    if _LOADED_ENV_PATH is not None:
+        return _LOADED_ENV_PATH
+
+    seen: set[Path] = set()
+    for candidate in _candidate_env_paths():
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        if not candidate.exists():
+            continue
+        for raw_line in candidate.read_text(encoding="utf-8").splitlines():
+            parsed = _parse_env_line(raw_line)
+            if parsed is None:
+                continue
+            key, value = parsed
+            os.environ.setdefault(key, value)
+        _LOADED_ENV_PATH = candidate
+        return _LOADED_ENV_PATH
+    return None
+
+
+bootstrap_environment()
 
 
 def _flag(name: str, default: bool) -> bool:
@@ -24,6 +77,7 @@ class Settings:
     upload_dir: Path
     task_store_path: Path
     sample_contract_dir: Path
+    env_file_path: str | None
     ragflow_base_url: str
     ragflow_api_key: str | None
     bootstrap_samples: bool
@@ -38,6 +92,7 @@ class Settings:
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
+    env_file_path = str(_LOADED_ENV_PATH) if _LOADED_ENV_PATH is not None else None
     data_dir = Path(os.getenv("CONTRACT_COMPLIANCE_DATA_DIR", API_ROOT / "data"))
     upload_dir = Path(os.getenv("CONTRACT_COMPLIANCE_UPLOAD_DIR", data_dir / "uploads"))
     task_store_path = Path(os.getenv("CONTRACT_COMPLIANCE_TASK_STORE", data_dir / "tasks.json"))
@@ -62,6 +117,7 @@ def get_settings() -> Settings:
         upload_dir=upload_dir,
         task_store_path=task_store_path,
         sample_contract_dir=sample_contract_dir,
+        env_file_path=env_file_path,
         ragflow_base_url=ragflow_base_url,
         ragflow_api_key=ragflow_api_key,
         bootstrap_samples=bootstrap_samples,

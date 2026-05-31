@@ -64,6 +64,11 @@ def llm_health() -> dict:
     return LLMClient().probe().model_dump()
 
 
+@router.post("/llm/check")
+def llm_check() -> dict:
+    return LLMClient().manual_check().model_dump()
+
+
 @router.get("/system/status")
 def system_status() -> dict:
     repository = TaskRepository()

@@ -125,3 +125,46 @@ def test_system_status_does_not_leak_llm_secret(client: TestClient) -> None:
     assert "test-secret-value" not in payload_text
     assert payload["llm"]["api_key_present"] is True
     assert payload["llm"]["status"] == "configured"
+
+
+def test_dashboard_shows_manual_llm_probe_panel(client: TestClient) -> None:
+    response = client.get("/")
+
+    assert response.status_code == 200
+    assert "大模型可用性检查" in response.text
+    assert "主动检测模型" in response.text
+
+
+def test_manual_llm_check_returns_probe_result(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.config import get_settings
+    from app.services import llm
+
+    class FakeResponse:
+        def __enter__(self) -> "FakeResponse":
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> bool:
+            return False
+
+        def read(self) -> bytes:
+            return b'{"choices":[{"message":{"content":"OK"}}]}'
+
+    def fake_urlopen(req, timeout):  # noqa: ANN001
+        assert req.full_url == "https://gen.trendbot.cn/v1/chat/completions"
+        assert timeout > 0
+        return FakeResponse()
+
+    get_settings.cache_clear()
+    monkeypatch.setattr(llm.request, "urlopen", fake_urlopen)
+
+    response = client.post("/api/llm/check")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "verified"
+    assert payload["response_preview"] == "OK"
+    assert payload["latency_ms"] is not None
+    get_settings.cache_clear()

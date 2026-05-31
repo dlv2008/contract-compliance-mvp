@@ -64,6 +64,13 @@ class LLMProbe(BaseModel):
     model: str
     status: str
     detail: str
+    title: str = "模型状态"
     configured: bool
     verified: bool
     api_key_present: bool
+    env_file_path: str | None = None
+    missing_fields: list[str] = Field(default_factory=list)
+    checked_at: str | None = None
+    latency_ms: float | None = None
+    response_preview: str | None = None
+    error_detail: str | None = None
