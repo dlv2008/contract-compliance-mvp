@@ -119,6 +119,28 @@
             <p>{{ data.llm.detail }}</p>
             <p class="endpoint">{{ data.llm.model }} · {{ data.llm.chat_completions_url }}</p>
         </div>
+
+        <div class="status-block status-block-{{ data.database.tone }}">
+            <div class="panel-head">
+                <h3>任务数据库</h3>
+            </div>
+            <p class="integration-status">{{ data.database.status_label }}</p>
+            <p>{{ data.database.detail }}</p>
+            {% if data.database.dsn %}
+            <p class="endpoint">{{ data.database.dsn }}</p>
+            {% endif %}
+        </div>
+
+        <div class="status-block status-block-{{ data.object_storage.tone }}">
+            <div class="panel-head">
+                <h3>原件存储</h3>
+            </div>
+            <p class="integration-status">{{ data.object_storage.status_label }}</p>
+            <p>{{ data.object_storage.detail }}</p>
+            {% if data.object_storage.endpoint_url %}
+            <p class="endpoint">{{ data.object_storage.endpoint_url }} · {{ data.object_storage.bucket }}</p>
+            {% endif %}
+        </div>
     </aside>
 </section>
 

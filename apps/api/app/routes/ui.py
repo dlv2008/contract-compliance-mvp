@@ -4,7 +4,9 @@ from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
+from app.services.db_store import DatabaseProbeClient
 from app.services.llm import LLMClient
+from app.services.object_store import ObjectStore
 from app.services.ragflow import RagflowClient
 from app.services.review_engine import build_dashboard_payload, build_review_payload
 from app.services.storage import ContractUploadError, TaskRepository, TaskStorageError
@@ -26,7 +28,13 @@ def dashboard(request: Request) -> HTMLResponse:
         "dashboard.html",
         {
             "page_title": "合同合规审查工作台",
-            "data": build_dashboard_payload(tasks, RagflowClient().probe(), LLMClient().probe()),
+            "data": build_dashboard_payload(
+                tasks,
+                RagflowClient().probe(),
+                LLMClient().probe(),
+                DatabaseProbeClient().probe(),
+                ObjectStore().probe(),
+            ),
         },
     )
 
@@ -42,7 +50,13 @@ def tasks(request: Request) -> HTMLResponse:
         "dashboard.html",
         {
             "page_title": "任务总览",
-            "data": build_dashboard_payload(task_items, RagflowClient().probe(), LLMClient().probe()),
+            "data": build_dashboard_payload(
+                task_items,
+                RagflowClient().probe(),
+                LLMClient().probe(),
+                DatabaseProbeClient().probe(),
+                ObjectStore().probe(),
+            ),
         },
     )
 
@@ -57,6 +71,7 @@ async def create_task(
             filename=file.filename or "contract.txt",
             payload=await file.read(),
             contract_name=contract_name,
+            content_type=file.content_type,
         )
     except ContractUploadError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -89,6 +104,12 @@ def review(task_id: str, request: Request) -> HTMLResponse:
         "review.html",
         {
             "page_title": "审查结果",
-            "data": build_review_payload(task, RagflowClient().probe(), LLMClient().probe()),
+            "data": build_review_payload(
+                task,
+                RagflowClient().probe(),
+                LLMClient().probe(),
+                DatabaseProbeClient().probe(),
+                ObjectStore().probe(),
+            ),
         },
     )

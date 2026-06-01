@@ -76,8 +76,16 @@ class Settings:
     data_dir: Path
     upload_dir: Path
     task_store_path: Path
+    task_store_backend: str
+    database_url: str | None
     sample_contract_dir: Path
     env_file_path: str | None
+    object_storage_backend: str
+    minio_endpoint_url: str
+    minio_access_key: str | None
+    minio_secret_key: str | None
+    minio_bucket: str
+    minio_secure: bool
     ragflow_base_url: str
     ragflow_api_key: str | None
     bootstrap_samples: bool
@@ -96,12 +104,31 @@ def get_settings() -> Settings:
     data_dir = Path(os.getenv("CONTRACT_COMPLIANCE_DATA_DIR", API_ROOT / "data"))
     upload_dir = Path(os.getenv("CONTRACT_COMPLIANCE_UPLOAD_DIR", data_dir / "uploads"))
     task_store_path = Path(os.getenv("CONTRACT_COMPLIANCE_TASK_STORE", data_dir / "tasks.json"))
+    task_store_backend = os.getenv("CONTRACT_COMPLIANCE_TASK_STORE_BACKEND", "json").strip().lower()
+    database_url = os.getenv("CONTRACT_COMPLIANCE_DATABASE_URL") or os.getenv("DATABASE_URL")
     sample_contract_dir = Path(
         os.getenv(
             "CONTRACT_COMPLIANCE_SAMPLE_DIR",
             REPO_ROOT / "resource" / "01_合同样本",
         )
     )
+    object_storage_backend = os.getenv("CONTRACT_COMPLIANCE_OBJECT_STORAGE", "local").strip().lower()
+    minio_endpoint_url = os.getenv(
+        "CONTRACT_COMPLIANCE_MINIO_ENDPOINT_URL",
+        os.getenv("MINIO_ENDPOINT_URL", "http://127.0.0.1:9000"),
+    ).rstrip("/")
+    minio_access_key = (
+        os.getenv("CONTRACT_COMPLIANCE_MINIO_ACCESS_KEY")
+        or os.getenv("MINIO_ACCESS_KEY")
+        or os.getenv("MINIO_ROOT_USER")
+    )
+    minio_secret_key = (
+        os.getenv("CONTRACT_COMPLIANCE_MINIO_SECRET_KEY")
+        or os.getenv("MINIO_SECRET_KEY")
+        or os.getenv("MINIO_ROOT_PASSWORD")
+    )
+    minio_bucket = os.getenv("CONTRACT_COMPLIANCE_MINIO_BUCKET", os.getenv("MINIO_BUCKET", "contract-compliance"))
+    minio_secure = _flag("CONTRACT_COMPLIANCE_MINIO_SECURE", _flag("MINIO_SECURE", False))
     ragflow_base_url = os.getenv("RAGFLOW_BASE_URL", "http://127.0.0.1:9380").rstrip("/")
     ragflow_api_key = os.getenv("RAGFLOW_API_KEY")
     bootstrap_samples = _flag("CONTRACT_COMPLIANCE_BOOTSTRAP_SAMPLES", True)
@@ -116,8 +143,16 @@ def get_settings() -> Settings:
         data_dir=data_dir,
         upload_dir=upload_dir,
         task_store_path=task_store_path,
+        task_store_backend=task_store_backend,
+        database_url=database_url,
         sample_contract_dir=sample_contract_dir,
         env_file_path=env_file_path,
+        object_storage_backend=object_storage_backend,
+        minio_endpoint_url=minio_endpoint_url,
+        minio_access_key=minio_access_key,
+        minio_secret_key=minio_secret_key,
+        minio_bucket=minio_bucket,
+        minio_secure=minio_secure,
         ragflow_base_url=ragflow_base_url,
         ragflow_api_key=ragflow_api_key,
         bootstrap_samples=bootstrap_samples,

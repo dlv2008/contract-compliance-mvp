@@ -15,6 +15,8 @@ if str(APP_ROOT) not in sys.path:
 def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     monkeypatch.setenv("CONTRACT_COMPLIANCE_DATA_DIR", str(tmp_path / "data"))
     monkeypatch.setenv("CONTRACT_COMPLIANCE_BOOTSTRAP_SAMPLES", "0")
+    monkeypatch.setenv("CONTRACT_COMPLIANCE_TASK_STORE_BACKEND", "json")
+    monkeypatch.setenv("CONTRACT_COMPLIANCE_OBJECT_STORAGE", "local")
     monkeypatch.setenv("RAGFLOW_BASE_URL", "http://127.0.0.1:65530")
     monkeypatch.setenv("LLM_API_KEY", "test-secret-value")
     monkeypatch.setenv("LLM_PROBE_ENABLED", "0")

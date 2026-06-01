@@ -43,6 +43,18 @@ class AgentTraceEvent(BaseModel):
     payload: dict = Field(default_factory=dict)
 
 
+class StoredFile(BaseModel):
+    original_filename: str
+    content_type: str = "application/octet-stream"
+    size_bytes: int
+    sha256: str
+    storage_backend: str
+    object_key: str
+    local_path: str | None = None
+    bucket: str | None = None
+    saved_at: str
+
+
 class ReportSnapshot(BaseModel):
     title: str
     summary: str
@@ -65,6 +77,7 @@ class TaskRecord(BaseModel):
     summary: str
     created_at: str
     contract_text: str
+    stored_file: StoredFile | None = None
     clauses: list[Clause] = Field(default_factory=list)
     extracted_fields: list[ExtractedField] = Field(default_factory=list)
     risks: list[RiskFinding] = Field(default_factory=list)
@@ -80,6 +93,24 @@ class RagflowProbe(BaseModel):
     healthy: bool
     datasets: list[str] = Field(default_factory=list)
     raw: dict = Field(default_factory=dict)
+
+
+class DatabaseProbe(BaseModel):
+    backend: str
+    status: str
+    detail: str
+    healthy: bool
+    dsn: str | None = None
+    task_count: int | None = None
+
+
+class ObjectStorageProbe(BaseModel):
+    backend: str
+    status: str
+    detail: str
+    healthy: bool
+    endpoint_url: str | None = None
+    bucket: str | None = None
 
 
 class LLMProbe(BaseModel):

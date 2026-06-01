@@ -8,8 +8,10 @@ from typing import Any
 from app.models import (
     AgentTraceEvent,
     Clause,
+    DatabaseProbe,
     ExtractedField,
     LLMProbe,
+    ObjectStorageProbe,
     RagflowProbe,
     ReportSnapshot,
     RiskFinding,
@@ -146,7 +148,13 @@ def analyze_contract(
     )
 
 
-def build_dashboard_payload(tasks: list[TaskRecord], ragflow: RagflowProbe, llm: LLMProbe) -> dict[str, Any]:
+def build_dashboard_payload(
+    tasks: list[TaskRecord],
+    ragflow: RagflowProbe,
+    llm: LLMProbe,
+    database: DatabaseProbe | None = None,
+    object_storage: ObjectStorageProbe | None = None,
+) -> dict[str, Any]:
     pending_count = sum(task.status == "pending_review" for task in tasks)
     return {
         "headline": {
@@ -164,10 +172,18 @@ def build_dashboard_payload(tasks: list[TaskRecord], ragflow: RagflowProbe, llm:
         "timeline": TIMELINE,
         "ragflow": build_ragflow_payload(ragflow),
         "llm": build_llm_payload(llm),
+        "database": build_database_payload(database),
+        "object_storage": build_object_storage_payload(object_storage),
     }
 
 
-def build_review_payload(task: TaskRecord, ragflow: RagflowProbe, llm: LLMProbe) -> dict[str, Any]:
+def build_review_payload(
+    task: TaskRecord,
+    ragflow: RagflowProbe,
+    llm: LLMProbe,
+    database: DatabaseProbe | None = None,
+    object_storage: ObjectStorageProbe | None = None,
+) -> dict[str, Any]:
     high_count = sum(risk.level == "high" for risk in task.risks)
     medium_count = sum(risk.level == "medium" for risk in task.risks)
     top_rule = task.risks[0].rule_id if task.risks else "未命中"
@@ -248,6 +264,8 @@ def build_review_payload(task: TaskRecord, ragflow: RagflowProbe, llm: LLMProbe)
         ),
         "ragflow": build_ragflow_payload(ragflow),
         "llm": build_llm_payload(llm),
+        "database": build_database_payload(database),
+        "object_storage": build_object_storage_payload(object_storage),
     }
 
 
@@ -298,6 +316,46 @@ def build_llm_payload(llm: LLMProbe) -> dict[str, Any]:
         "verified": llm.verified,
         "env_file_path": llm.env_file_path,
         "missing_fields": llm.missing_fields,
+    }
+
+
+def build_database_payload(database: DatabaseProbe | None) -> dict[str, Any]:
+    if database is None:
+        return {
+            "backend": "unknown",
+            "tone": "warn",
+            "status_label": "未检查",
+            "detail": "数据库状态尚未探测。",
+            "dsn": None,
+            "task_count": None,
+        }
+    return {
+        "backend": database.backend,
+        "tone": "ok" if database.healthy else "danger",
+        "status_label": "已连接" if database.healthy else "待处理",
+        "detail": database.detail,
+        "dsn": database.dsn,
+        "task_count": database.task_count,
+    }
+
+
+def build_object_storage_payload(object_storage: ObjectStorageProbe | None) -> dict[str, Any]:
+    if object_storage is None:
+        return {
+            "backend": "unknown",
+            "tone": "warn",
+            "status_label": "未检查",
+            "detail": "原件存储状态尚未探测。",
+            "endpoint_url": None,
+            "bucket": None,
+        }
+    return {
+        "backend": object_storage.backend,
+        "tone": "ok" if object_storage.healthy else "danger",
+        "status_label": "已连接" if object_storage.healthy else "待处理",
+        "detail": object_storage.detail,
+        "endpoint_url": object_storage.endpoint_url,
+        "bucket": object_storage.bucket,
     }
 
 

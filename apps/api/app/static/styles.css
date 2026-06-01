@@ -715,6 +715,10 @@ a {
     background: #e0a437;
 }
 
+.service-dot-danger {
+    background: var(--danger);
+}
+
 .status-block {
     margin-top: 18px;
     padding-top: 18px;

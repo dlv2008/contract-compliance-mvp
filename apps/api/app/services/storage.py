@@ -9,6 +9,8 @@ from pydantic import ValidationError
 
 from app.config import Settings, get_settings
 from app.models import TaskRecord
+from app.services.db_store import PostgresTaskStore
+from app.services.object_store import ObjectStorageError, ObjectStore
 from app.services.review_engine import analyze_contract
 
 
@@ -29,10 +31,15 @@ class TaskRepository:
 
     def list_tasks(self) -> list[TaskRecord]:
         self._bootstrap_if_needed()
+        if self._use_postgres():
+            return self._postgres_store().list_tasks()
         tasks = self._load_tasks()
         return sorted(tasks, key=lambda task: task.created_at, reverse=True)
 
     def get_task(self, task_id: str) -> TaskRecord | None:
+        if self._use_postgres():
+            self._bootstrap_if_needed()
+            return self._postgres_store().get_task(task_id)
         return next((task for task in self.list_tasks() if task.id == task_id), None)
 
     def create_task_from_upload(
@@ -40,6 +47,7 @@ class TaskRepository:
         filename: str,
         payload: bytes,
         contract_name: str | None = None,
+        content_type: str | None = None,
     ) -> TaskRecord:
         if not payload:
             raise ContractUploadError("上传文件为空，请重新选择合同文件。")
@@ -55,37 +63,49 @@ class TaskRepository:
 
         contract_text = decode_contract_bytes(payload)
         task_id = f"task-{uuid.uuid4().hex[:10]}"
+        try:
+            stored_file = ObjectStore(self.settings).save_upload(
+                task_id=task_id,
+                filename=source_filename,
+                payload=payload,
+                content_type=content_type,
+            )
+        except ObjectStorageError as exc:
+            raise TaskStorageError(str(exc)) from exc
+
         task = analyze_contract(
             task_id=task_id,
             source_filename=source_filename,
             contract_name=contract_name,
             contract_text=contract_text,
-        )
-        self._write_upload_copy(task_id, source_filename, contract_text)
-        tasks = self.list_tasks()
-        tasks.insert(0, task)
-        self._save_tasks(tasks)
+        ).model_copy(update={"stored_file": stored_file})
+        if self._use_postgres():
+            self._bootstrap_if_needed()
+            self._postgres_store().upsert_task(task, event_message="uploaded contract and generated review snapshot")
+        else:
+            tasks = self.list_tasks()
+            tasks.insert(0, task)
+            self._save_tasks(tasks)
         return task
 
     def _bootstrap_if_needed(self) -> None:
+        if self._use_postgres():
+            store = self._postgres_store()
+            if store.count_tasks() > 0:
+                return
+            for task in self._load_existing_json_tasks():
+                store.upsert_task(task, event_message="imported task from json store")
+            if store.count_tasks() > 0:
+                return
+            for task in self._build_sample_tasks():
+                store.upsert_task(task, event_message="bootstrapped sample task")
+            return
+
         if self.settings.task_store_path.exists():
             return
 
         self._ensure_dirs()
-        if not self.settings.bootstrap_samples or not self.settings.sample_contract_dir.exists():
-            self._save_tasks([])
-            return
-
-        tasks: list[TaskRecord] = []
-        for index, sample_path in enumerate(sorted(self.settings.sample_contract_dir.glob("*.md")), start=1):
-            task = analyze_contract(
-                task_id=f"sample-{index:03d}",
-                source_filename=sample_path.name,
-                contract_name=sample_path.stem,
-                contract_text=sample_path.read_text(encoding="utf-8"),
-            )
-            tasks.append(task)
-        self._save_tasks(tasks)
+        self._save_tasks(self._build_sample_tasks())
 
     def _load_tasks(self) -> list[TaskRecord]:
         if not self.settings.task_store_path.exists():
@@ -110,12 +130,6 @@ class TaskRepository:
         temp_path.write_text(payload, encoding="utf-8")
         temp_path.replace(self.settings.task_store_path)
 
-    def _write_upload_copy(self, task_id: str, filename: str, contract_text: str) -> None:
-        self._ensure_dirs()
-        suffix = Path(filename).suffix.lower()
-        target_path = self.settings.upload_dir / f"{task_id}{suffix}"
-        target_path.write_text(contract_text, encoding="utf-8")
-
     def _ensure_dirs(self) -> None:
         self.settings.data_dir.mkdir(parents=True, exist_ok=True)
         self.settings.upload_dir.mkdir(parents=True, exist_ok=True)
@@ -127,6 +141,39 @@ class TaskRepository:
         self.settings.task_store_path.replace(backup_path)
         self._save_tasks([])
         return backup_path
+
+    def _build_sample_tasks(self) -> list[TaskRecord]:
+        if not self.settings.bootstrap_samples or not self.settings.sample_contract_dir.exists():
+            return []
+
+        tasks: list[TaskRecord] = []
+        for index, sample_path in enumerate(sorted(self.settings.sample_contract_dir.glob("*.md")), start=1):
+            payload = sample_path.read_bytes()
+            stored_file = ObjectStore(self.settings).save_upload(
+                task_id=f"sample-{index:03d}",
+                filename=sample_path.name,
+                payload=payload,
+                content_type="text/markdown",
+            )
+            task = analyze_contract(
+                task_id=f"sample-{index:03d}",
+                source_filename=sample_path.name,
+                contract_name=sample_path.stem,
+                contract_text=payload.decode("utf-8"),
+            ).model_copy(update={"stored_file": stored_file})
+            tasks.append(task)
+        return tasks
+
+    def _load_existing_json_tasks(self) -> list[TaskRecord]:
+        if not self.settings.task_store_path.exists():
+            return []
+        return self._load_tasks()
+
+    def _use_postgres(self) -> bool:
+        return self.settings.task_store_backend == "postgres"
+
+    def _postgres_store(self) -> PostgresTaskStore:
+        return PostgresTaskStore(self.settings)
 
 
 def decode_contract_bytes(payload: bytes) -> str:

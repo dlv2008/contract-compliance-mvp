@@ -29,6 +29,26 @@
             <p>{{ data.llm.detail }}</p>
             <p class="endpoint">{{ data.llm.model }} · {{ data.llm.chat_completions_url }}</p>
         </div>
+        <div class="service-status-row">
+            <div>
+                <span class="service-dot service-dot-{{ data.database.tone }}"></span>
+                <strong>PostgreSQL {{ data.database.status_label }}</strong>
+            </div>
+            <p>{{ data.database.detail }}</p>
+            {% if data.database.dsn %}
+            <p class="endpoint">{{ data.database.dsn }}</p>
+            {% endif %}
+        </div>
+        <div class="service-status-row">
+            <div>
+                <span class="service-dot service-dot-{{ data.object_storage.tone }}"></span>
+                <strong>原件存储 {{ data.object_storage.status_label }}</strong>
+            </div>
+            <p>{{ data.object_storage.detail }}</p>
+            {% if data.object_storage.endpoint_url %}
+            <p class="endpoint">{{ data.object_storage.endpoint_url }} · {{ data.object_storage.bucket }}</p>
+            {% endif %}
+        </div>
         {% if data.ragflow.datasets %}
         <ul class="simple-list">
             {% for dataset in data.ragflow.datasets %}

@@ -3,7 +3,9 @@ from __future__ import annotations
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import JSONResponse
 
+from app.services.db_store import DatabaseProbeClient
 from app.services.llm import LLMClient
+from app.services.object_store import ObjectStore
 from app.services.ragflow import RagflowClient
 from app.services.review_engine import build_review_payload, build_task_summary
 from app.services.storage import ContractUploadError, TaskRepository, TaskStorageError
@@ -31,6 +33,7 @@ async def create_task(
             filename=file.filename or "contract.txt",
             payload=await file.read(),
             contract_name=contract_name,
+            content_type=file.content_type,
         )
     except ContractUploadError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -51,7 +54,15 @@ def get_task(task_id: str) -> dict:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     if task is None:
         raise HTTPException(status_code=404, detail="任务不存在。")
-    return {"task": build_review_payload(task, RagflowClient().probe(), LLMClient().probe())}
+    return {
+        "task": build_review_payload(
+            task,
+            RagflowClient().probe(),
+            LLMClient().probe(),
+            DatabaseProbeClient().probe(),
+            ObjectStore().probe(),
+        )
+    }
 
 
 @router.get("/ragflow/health")
@@ -80,6 +91,8 @@ def system_status() -> dict:
     return {
         "app": {"status": "ok"},
         "storage": storage,
+        "database": DatabaseProbeClient().probe().model_dump(),
+        "object_storage": ObjectStore().probe().model_dump(),
         "ragflow": RagflowClient().probe().model_dump(),
         "llm": LLMClient().probe().model_dump(),
     }
