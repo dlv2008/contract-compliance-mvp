@@ -69,6 +69,9 @@ def test_create_task_and_fetch_review_payload(client: TestClient) -> None:
     assert "FIN-PUR-003" in rule_ids
     assert "FIN-PUR-005" in rule_ids
     assert review_task["task"]["risk"] == "高风险"
+    assert len(review_task["workflow_steps"]) >= 5
+    assert any(event["type"] == "rule.evaluate" for event in review_task["trace"])
+    assert review_task["report"]["summary"]
 
 
 def test_rejects_unsupported_upload_type(client: TestClient) -> None:
@@ -113,6 +116,8 @@ def test_dashboard_and_review_pages_render_created_task(client: TestClient) -> N
     assert "RAGFlow 状态" in review_response.text
     assert "模型服务" in review_response.text
     assert "高风险" in review_response.text
+    assert "Agent 决策轨迹" in review_response.text
+    assert "报告快照" in review_response.text
 
 
 def test_system_status_does_not_leak_llm_secret(client: TestClient) -> None:

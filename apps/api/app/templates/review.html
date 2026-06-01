@@ -121,4 +121,46 @@
         </div>
     </aside>
 </section>
+
+<section class="trace-grid">
+    <article class="panel">
+        <div class="panel-head">
+            <h3>流程状态</h3>
+        </div>
+        <div class="workflow-list">
+            {% for step in data.workflow_steps %}
+            <div class="workflow-step workflow-{{ step.status }}">
+                <span>{{ loop.index }}</span>
+                <strong>{{ step.label }}</strong>
+                <em>{{ step.status }}</em>
+            </div>
+            {% endfor %}
+        </div>
+    </article>
+
+    <article class="panel">
+        <div class="panel-head">
+            <h3>Agent 决策轨迹</h3>
+        </div>
+        <div class="trace-list">
+            {% for event in data.trace %}
+            <div class="trace-item">
+                <span>{{ event.type }}</span>
+                <strong>{{ event.message }}</strong>
+                <small>{{ event.at }}</small>
+            </div>
+            {% endfor %}
+        </div>
+    </article>
+</section>
+
+{% if data.report %}
+<section class="panel report-panel">
+    <div class="panel-head">
+        <h3>报告快照</h3>
+    </div>
+    <p>{{ data.report.summary }}</p>
+    <p class="risk-action">{{ data.report.recommendation }}</p>
+</section>
+{% endif %}
 {% endblock %}

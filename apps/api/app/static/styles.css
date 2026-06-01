@@ -736,6 +736,71 @@ a {
     font-size: 18px;
 }
 
+.trace-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 18px;
+    margin-top: 18px;
+}
+
+.workflow-list,
+.trace-list {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.workflow-step,
+.trace-item {
+    display: grid;
+    grid-template-columns: 42px minmax(0, 1fr) auto;
+    gap: 12px;
+    align-items: center;
+    padding: 13px 14px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    background: rgba(255, 255, 255, 0.68);
+}
+
+.workflow-step span,
+.trace-item span {
+    display: inline-grid;
+    place-items: center;
+    min-width: 32px;
+    height: 32px;
+    border-radius: 999px;
+    background: rgba(19, 32, 35, 0.08);
+    font-size: 12px;
+}
+
+.workflow-step em {
+    color: var(--muted);
+    font-style: normal;
+    font-size: 13px;
+}
+
+.workflow-done {
+    border-color: rgba(47, 124, 99, 0.24);
+}
+
+.workflow-waiting {
+    border-color: rgba(211, 138, 29, 0.26);
+}
+
+.trace-item {
+    grid-template-columns: 140px minmax(0, 1fr) auto;
+}
+
+.trace-item span,
+.trace-item small {
+    color: var(--muted);
+    font-size: 12px;
+}
+
+.report-panel {
+    margin-top: 18px;
+}
+
 @media (max-width: 1120px) {
     .metric-grid {
         grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -747,6 +812,7 @@ a {
     }
 
     .workspace-grid,
+    .trace-grid,
     .dashboard-grid,
     .hero,
     .review-header {
@@ -775,6 +841,10 @@ a {
     }
 
     .task-row {
+        grid-template-columns: 1fr;
+    }
+
+    .trace-item {
         grid-template-columns: 1fr;
     }
 

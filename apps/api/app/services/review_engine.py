@@ -5,7 +5,17 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from app.models import Clause, ExtractedField, LLMProbe, RagflowProbe, RiskFinding, TaskRecord
+from app.models import (
+    AgentTraceEvent,
+    Clause,
+    ExtractedField,
+    LLMProbe,
+    RagflowProbe,
+    ReportSnapshot,
+    RiskFinding,
+    TaskRecord,
+    WorkflowStep,
+)
 
 
 CONTRACT_TYPE_LABELS = {
@@ -109,6 +119,9 @@ def analyze_contract(
     status = derive_status(overall_risk)
     decision = derive_decision(overall_risk)
     created_at = created_at or datetime.now(timezone.utc).isoformat(timespec="seconds")
+    workflow_steps = build_workflow_steps(created_at, status)
+    agent_trace = build_agent_trace(created_at, contract_type, clauses, extracted_fields, risks, status)
+    report_snapshot = build_report_snapshot(resolved_name, risks, decision)
     return TaskRecord(
         id=task_id,
         name=resolved_name,
@@ -127,6 +140,9 @@ def analyze_contract(
         clauses=clauses,
         extracted_fields=extracted_fields,
         risks=risks,
+        workflow_steps=workflow_steps,
+        agent_trace=agent_trace,
+        report_snapshot=report_snapshot,
     )
 
 
@@ -203,6 +219,33 @@ def build_review_payload(task: TaskRecord, ragflow: RagflowProbe, llm: LLMProbe)
             }
             for risk in task.risks
         ],
+        "workflow_steps": [
+            {
+                "key": step.key,
+                "label": step.label,
+                "status": step.status,
+                "updated_at": step.updated_at,
+            }
+            for step in task.workflow_steps
+        ],
+        "trace": [
+            {
+                "at": event.at,
+                "type": event.type,
+                "message": event.message,
+            }
+            for event in task.agent_trace[-8:]
+        ],
+        "report": (
+            {
+                "title": task.report_snapshot.title,
+                "summary": task.report_snapshot.summary,
+                "recommendation": task.report_snapshot.recommendation,
+                "generated_at": task.report_snapshot.generated_at,
+            }
+            if task.report_snapshot
+            else None
+        ),
         "ragflow": build_ragflow_payload(ragflow),
         "llm": build_llm_payload(llm),
     }
@@ -817,3 +860,81 @@ def render_policy_reference(policy_id: str) -> str:
     if title:
         return f"{policy_id} {title}"
     return policy_id
+
+
+def build_workflow_steps(created_at: str, status: str) -> list[WorkflowStep]:
+    review_status = "waiting" if status == "pending_review" else "done"
+    return [
+        WorkflowStep(key="uploaded", label="原件存档", status="done", updated_at=created_at),
+        WorkflowStep(key="parsing", label="条款解析", status="done", updated_at=created_at),
+        WorkflowStep(key="extracting", label="事实抽取", status="done", updated_at=created_at),
+        WorkflowStep(key="evaluating", label="规则裁决", status="done", updated_at=created_at),
+        WorkflowStep(key="review", label="人工复核", status=review_status, updated_at=created_at),
+        WorkflowStep(key="report", label="报告快照", status="done", updated_at=created_at),
+    ]
+
+
+def build_agent_trace(
+    created_at: str,
+    contract_type: str,
+    clauses: list[Clause],
+    extracted_fields: list[ExtractedField],
+    risks: list[RiskFinding],
+    status: str,
+) -> list[AgentTraceEvent]:
+    awaiting_review = status == "pending_review"
+    return [
+        AgentTraceEvent(
+            at=created_at,
+            type="agent.plan",
+            message="生成审查计划，确定先执行条款解析、字段抽取和规则评估。",
+            payload={"contract_type": contract_type},
+        ),
+        AgentTraceEvent(
+            at=created_at,
+            type="document.parse",
+            message=f"完成条款解析，生成 {len(clauses)} 个可审计条款片段。",
+            payload={"clause_count": len(clauses)},
+        ),
+        AgentTraceEvent(
+            at=created_at,
+            type="fact.extract",
+            message=f"完成关键事实抽取，当前输出 {len(extracted_fields)} 个字段。",
+            payload={"field_count": len(extracted_fields)},
+        ),
+        AgentTraceEvent(
+            at=created_at,
+            type="rule.evaluate",
+            message=f"规则引擎完成初筛，命中 {len(risks)} 条风险。",
+            payload={"risk_count": len(risks)},
+        ),
+        AgentTraceEvent(
+            at=created_at,
+            type="review.route",
+            message="由于存在高/中风险，任务已进入人工复核队列。"
+            if awaiting_review
+            else "当前任务未命中高风险，已可直接进入报告确认。",
+            payload={"status": status},
+        ),
+    ]
+
+
+def build_report_snapshot(name: str, risks: list[RiskFinding], decision: str) -> ReportSnapshot:
+    high_count = sum(risk.level == "high" for risk in risks)
+    medium_count = sum(risk.level == "medium" for risk in risks)
+    return ReportSnapshot(
+        title=f"{name} 审查报告快照",
+        summary=f"系统识别 {len(risks)} 条风险，其中高风险 {high_count} 条、中风险 {medium_count} 条。",
+        recommendation=build_report_recommendation(risks, decision),
+        generated_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    )
+
+
+def build_report_recommendation(risks: list[RiskFinding], decision: str) -> str:
+    if not risks:
+        return "建议完成人工抽样复核后进入签署或执行流程。"
+    if decision == "manual_review":
+        return "建议审查人优先处理高风险项，补齐依据材料后再确认是否放行。"
+    if decision == "review_recommended":
+        return "建议结合业务背景复核中风险项，必要时补充条款和审批依据。"
+    return "当前审查结果可作为后续报告与归档的基础版本。"

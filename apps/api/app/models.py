@@ -29,6 +29,27 @@ class RiskFinding(BaseModel):
     action: str
 
 
+class WorkflowStep(BaseModel):
+    key: str
+    label: str
+    status: str
+    updated_at: str | None = None
+
+
+class AgentTraceEvent(BaseModel):
+    at: str
+    type: str
+    message: str
+    payload: dict = Field(default_factory=dict)
+
+
+class ReportSnapshot(BaseModel):
+    title: str
+    summary: str
+    recommendation: str
+    generated_at: str
+
+
 class TaskRecord(BaseModel):
     id: str
     name: str
@@ -47,6 +68,9 @@ class TaskRecord(BaseModel):
     clauses: list[Clause] = Field(default_factory=list)
     extracted_fields: list[ExtractedField] = Field(default_factory=list)
     risks: list[RiskFinding] = Field(default_factory=list)
+    workflow_steps: list[WorkflowStep] = Field(default_factory=list)
+    agent_trace: list[AgentTraceEvent] = Field(default_factory=list)
+    report_snapshot: ReportSnapshot | None = None
 
 
 class RagflowProbe(BaseModel):
