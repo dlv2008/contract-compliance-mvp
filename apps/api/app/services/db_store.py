@@ -45,7 +45,7 @@ class PostgresTaskStore:
     def __init__(self, settings: Settings | None = None) -> None:
         self.settings = settings or get_settings()
         if not self.settings.database_url:
-            raise PostgresUnavailableError("未配置 CONTRACT_COMPLIANCE_DATABASE_URL。")
+            raise PostgresUnavailableError("未配置 DATABASE_URL。")
         self.ensure_schema()
 
     def list_tasks(self) -> list[TaskRecord]:
@@ -149,7 +149,7 @@ class DatabaseProbeClient:
             return DatabaseProbe(
                 backend="postgres",
                 status="not_configured",
-                detail="未配置 CONTRACT_COMPLIANCE_DATABASE_URL。",
+                detail="未配置 DATABASE_URL。",
                 healthy=False,
             )
         try:

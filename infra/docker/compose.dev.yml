@@ -19,9 +19,9 @@ services:
     build:
       context: ../../apps/api
     environment:
-      CONTRACT_COMPLIANCE_TASK_STORE_BACKEND: postgres
-      CONTRACT_COMPLIANCE_DATABASE_URL: postgresql://contract_app:contract_app_dev@postgres:5432/contract_compliance
-      CONTRACT_COMPLIANCE_OBJECT_STORAGE: local
+      TASK_STORE_BACKEND: postgres
+      DATABASE_URL: postgresql+psycopg://contract_app:contract_app_dev@postgres:5432/contract_compliance
+      STORAGE_BACKEND: local
     ports:
       - "8000:8000"
     depends_on:

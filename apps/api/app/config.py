@@ -10,6 +10,7 @@ APP_DIR = Path(__file__).resolve().parent
 API_ROOT = APP_DIR.parent
 REPO_ROOT = API_ROOT.parent.parent
 _LOADED_ENV_PATH: Path | None = None
+_LOADED_ENV_VALUES: dict[str, str] = {}
 
 
 def _parse_env_line(raw_line: str) -> tuple[str, str] | None:
@@ -38,7 +39,7 @@ def _candidate_env_paths() -> list[Path]:
 
 
 def bootstrap_environment() -> Path | None:
-    global _LOADED_ENV_PATH
+    global _LOADED_ENV_PATH, _LOADED_ENV_VALUES
 
     if _LOADED_ENV_PATH is not None:
         return _LOADED_ENV_PATH
@@ -55,6 +56,7 @@ def bootstrap_environment() -> Path | None:
             if parsed is None:
                 continue
             key, value = parsed
+            _LOADED_ENV_VALUES[key] = value
             os.environ.setdefault(key, value)
         _LOADED_ENV_PATH = candidate
         return _LOADED_ENV_PATH
@@ -65,10 +67,49 @@ bootstrap_environment()
 
 
 def _flag(name: str, default: bool) -> bool:
-    raw = os.getenv(name)
+    raw = _setting(name)
     if raw is None:
         return default
     return raw.strip().lower() not in {"0", "false", "no", "off"}
+
+
+def _setting(name: str, default: str | None = None) -> str | None:
+    raw = os.getenv(name)
+    file_value = _LOADED_ENV_VALUES.get(name)
+    if raw in {None, "", "replace_me"} and file_value not in {None, ""}:
+        return file_value
+    return raw if raw not in {None, ""} else default
+
+
+def _first_setting(*names: str, default: str | None = None) -> str | None:
+    for name in names:
+        value = _setting(name)
+        if value not in {None, ""}:
+            return value
+    return default
+
+
+def _normalize_database_url(url: str | None) -> str | None:
+    if not url:
+        return None
+    return url.replace("postgresql+psycopg://", "postgresql://", 1)
+
+
+def _normalize_minio_endpoint(endpoint: str | None, public_endpoint: str | None = None) -> str:
+    raw = endpoint or public_endpoint or "http://127.0.0.1:9000"
+    if "://" not in raw:
+        raw = f"http://{raw}"
+    return raw.rstrip("/")
+
+
+def _max_upload_bytes() -> int:
+    explicit_bytes = _setting("CONTRACT_COMPLIANCE_MAX_UPLOAD_BYTES")
+    if explicit_bytes:
+        return int(explicit_bytes)
+    max_mb = _setting("MAX_UPLOAD_MB")
+    if max_mb:
+        return int(float(max_mb) * 1024 * 1024)
+    return 2 * 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -101,43 +142,41 @@ class Settings:
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
     env_file_path = str(_LOADED_ENV_PATH) if _LOADED_ENV_PATH is not None else None
-    data_dir = Path(os.getenv("CONTRACT_COMPLIANCE_DATA_DIR", API_ROOT / "data"))
-    upload_dir = Path(os.getenv("CONTRACT_COMPLIANCE_UPLOAD_DIR", data_dir / "uploads"))
-    task_store_path = Path(os.getenv("CONTRACT_COMPLIANCE_TASK_STORE", data_dir / "tasks.json"))
-    task_store_backend = os.getenv("CONTRACT_COMPLIANCE_TASK_STORE_BACKEND", "json").strip().lower()
-    database_url = os.getenv("CONTRACT_COMPLIANCE_DATABASE_URL") or os.getenv("DATABASE_URL")
+    data_dir = Path(_first_setting("CONTRACT_COMPLIANCE_DATA_DIR", default=str(API_ROOT / "data")))
+    upload_dir = Path(_first_setting("CONTRACT_COMPLIANCE_UPLOAD_DIR", "UPLOAD_DIR", default=str(data_dir / "uploads")))
+    task_store_path = Path(_first_setting("CONTRACT_COMPLIANCE_TASK_STORE", default=str(data_dir / "tasks.json")))
+    task_store_backend = _first_setting("CONTRACT_COMPLIANCE_TASK_STORE_BACKEND", "TASK_STORE_BACKEND", default="json").strip().lower()
+    database_url = _normalize_database_url(
+        _first_setting("CONTRACT_COMPLIANCE_DATABASE_URL", "DATABASE_URL")
+    )
     sample_contract_dir = Path(
-        os.getenv(
+        _first_setting(
             "CONTRACT_COMPLIANCE_SAMPLE_DIR",
-            REPO_ROOT / "resource" / "01_合同样本",
+            default=str(REPO_ROOT / "resource" / "01_合同样本"),
         )
     )
-    object_storage_backend = os.getenv("CONTRACT_COMPLIANCE_OBJECT_STORAGE", "local").strip().lower()
-    minio_endpoint_url = os.getenv(
-        "CONTRACT_COMPLIANCE_MINIO_ENDPOINT_URL",
-        os.getenv("MINIO_ENDPOINT_URL", "http://127.0.0.1:9000"),
-    ).rstrip("/")
-    minio_access_key = (
-        os.getenv("CONTRACT_COMPLIANCE_MINIO_ACCESS_KEY")
-        or os.getenv("MINIO_ACCESS_KEY")
-        or os.getenv("MINIO_ROOT_USER")
+    object_storage_backend = _first_setting("CONTRACT_COMPLIANCE_OBJECT_STORAGE", "STORAGE_BACKEND", default="local").strip().lower()
+    minio_endpoint_url = _normalize_minio_endpoint(
+        _first_setting("MINIO_ENDPOINT_URL", "MINIO_ENDPOINT"),
+        _setting("MINIO_PUBLIC_ENDPOINT"),
     )
-    minio_secret_key = (
-        os.getenv("CONTRACT_COMPLIANCE_MINIO_SECRET_KEY")
-        or os.getenv("MINIO_SECRET_KEY")
-        or os.getenv("MINIO_ROOT_PASSWORD")
+    minio_access_key = _first_setting("MINIO_ACCESS_KEY", "MINIO_ROOT_USER")
+    minio_secret_key = _first_setting("MINIO_SECRET_KEY", "MINIO_ROOT_PASSWORD")
+    minio_bucket = _first_setting(
+        "MINIO_BUCKET",
+        "MINIO_BUCKET_CONTRACTS",
+        default="contract-compliance",
     )
-    minio_bucket = os.getenv("CONTRACT_COMPLIANCE_MINIO_BUCKET", os.getenv("MINIO_BUCKET", "contract-compliance"))
-    minio_secure = _flag("CONTRACT_COMPLIANCE_MINIO_SECURE", _flag("MINIO_SECURE", False))
-    ragflow_base_url = os.getenv("RAGFLOW_BASE_URL", "http://127.0.0.1:9380").rstrip("/")
-    ragflow_api_key = os.getenv("RAGFLOW_API_KEY")
+    minio_secure = _flag("MINIO_SECURE", False)
+    ragflow_base_url = _setting("RAGFLOW_BASE_URL", "http://127.0.0.1:9380").rstrip("/")
+    ragflow_api_key = _setting("RAGFLOW_API_KEY")
     bootstrap_samples = _flag("CONTRACT_COMPLIANCE_BOOTSTRAP_SAMPLES", True)
-    max_upload_bytes = int(os.getenv("CONTRACT_COMPLIANCE_MAX_UPLOAD_BYTES", str(2 * 1024 * 1024)))
-    llm_base_url = os.getenv("LLM_BASE_URL", "https://gen.trendbot.cn/v1").rstrip("/")
-    llm_chat_completions_url = os.getenv("LLM_CHAT_COMPLETIONS_URL")
-    llm_api_key = os.getenv("LLM_API_KEY")
-    llm_model = os.getenv("LLM_MODEL", "I2AI/minimax-m2.5")
-    llm_timeout_seconds = float(os.getenv("LLM_TIMEOUT_SECONDS", "15"))
+    max_upload_bytes = _max_upload_bytes()
+    llm_base_url = _setting("LLM_BASE_URL", "https://gen.trendbot.cn/v1").rstrip("/")
+    llm_chat_completions_url = _setting("LLM_CHAT_COMPLETIONS_URL")
+    llm_api_key = _setting("LLM_API_KEY")
+    llm_model = _setting("LLM_MODEL", "I2AI/minimax-m2.5")
+    llm_timeout_seconds = float(_setting("LLM_TIMEOUT_SECONDS", "15"))
     llm_probe_enabled = _flag("LLM_PROBE_ENABLED", False)
     return Settings(
         data_dir=data_dir,
