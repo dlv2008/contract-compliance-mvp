@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -8,13 +9,20 @@ from pathlib import Path
 from pydantic import ValidationError
 
 from app.config import Settings, get_settings
-from app.models import TaskRecord
+from app.models import AgentTraceEvent, ReportSnapshot, ReviewActionRecord, TaskRecord
 from app.services.db_store import PostgresTaskStore
 from app.services.object_store import ObjectStorageError, ObjectStore
 from app.services.review_engine import analyze_contract
 
 
 SUPPORTED_TEXT_EXTENSIONS = {".md", ".txt", ".text"}
+REVIEW_ACTION_TYPES = {"confirm", "reject", "rewrite_suggestion", "request_evidence"}
+REVIEW_STATUS_BY_ACTION = {
+    "confirm": "confirmed",
+    "reject": "rejected",
+    "rewrite_suggestion": "revised",
+    "request_evidence": "evidence_requested",
+}
 
 
 class ContractUploadError(ValueError):
@@ -79,6 +87,7 @@ class TaskRepository:
             contract_name=contract_name,
             contract_text=contract_text,
         ).model_copy(update={"stored_file": stored_file})
+        task = self._write_report_snapshot(task)
         if self._use_postgres():
             self._bootstrap_if_needed()
             self._postgres_store().upsert_task(task, event_message="uploaded contract and generated review snapshot")
@@ -87,6 +96,131 @@ class TaskRepository:
             tasks.insert(0, task)
             self._save_tasks(tasks)
         return task
+
+    def list_document_clauses(self, task_id: str) -> list[dict]:
+        if self._use_postgres():
+            self._bootstrap_if_needed()
+            return self._postgres_store().list_document_clauses(task_id)
+        task = self.get_task(task_id)
+        if task is None:
+            return []
+        return [
+            {
+                "task_id": task.id,
+                "clause_id": clause.id,
+                "title": clause.title,
+                "text": clause.text,
+                "status": clause.status,
+                "sequence_no": index,
+                "parser_source": "local",
+                "chunk_id": None,
+                "page_start": None,
+                "page_end": None,
+                "positions": {},
+                "version": 1,
+            }
+            for index, clause in enumerate(task.clauses, start=1)
+        ]
+
+    def list_extracted_facts(self, task_id: str) -> list[dict]:
+        if self._use_postgres():
+            self._bootstrap_if_needed()
+            return self._postgres_store().list_extracted_facts(task_id)
+        task = self.get_task(task_id)
+        if task is None:
+            return []
+        return [
+            {
+                "task_id": task.id,
+                "fact_key": field.key,
+                "label": field.label,
+                "value": field.value,
+                "status": field.status,
+                "evidence_clause_ids": field.evidence_clause_ids,
+                "extractor": "deterministic-mvp",
+                "schema_version": "mvp-facts-v1",
+            }
+            for field in task.extracted_fields
+        ]
+
+    def list_rule_hits(self, task_id: str) -> list[dict]:
+        if self._use_postgres():
+            self._bootstrap_if_needed()
+            return self._postgres_store().list_rule_hits(task_id)
+        task = self.get_task(task_id)
+        if task is None:
+            return []
+        return [
+            {
+                "task_id": task.id,
+                "rule_id": risk.rule_id,
+                "rule_version": risk.rule_version,
+                "title": risk.title,
+                "level": risk.level,
+                "message": risk.message,
+                "reason": risk.reason,
+                "evidence_clause_ids": risk.evidence_clause_ids,
+                "policy_reference_ids": risk.policy_reference_ids,
+                "action": risk.action,
+                "engine": "deterministic",
+                "review_status": risk.review_status,
+                "reviewer_comment": risk.reviewer_comment,
+            }
+            for risk in task.risks
+        ]
+
+    def list_review_actions(self, task_id: str) -> list[dict]:
+        if self._use_postgres():
+            self._bootstrap_if_needed()
+            return self._postgres_store().list_review_actions(task_id)
+        task = self.get_task(task_id)
+        if task is None:
+            return []
+        return [action.model_dump() for action in sorted(task.review_actions, key=lambda item: item.created_at, reverse=True)]
+
+    def list_report_snapshots(self, task_id: str) -> list[dict]:
+        if self._use_postgres():
+            self._bootstrap_if_needed()
+            return self._postgres_store().list_report_snapshots(task_id)
+        task = self.get_task(task_id)
+        if task is None or task.report_snapshot is None:
+            return []
+        return [{"task_id": task.id, **task.report_snapshot.model_dump()}]
+
+    def record_review_action(
+        self,
+        task_id: str,
+        *,
+        target_type: str,
+        target_id: str,
+        action_type: str,
+        actor: str = "reviewer",
+        comment: str | None = None,
+        revised_payload: dict | None = None,
+    ) -> ReviewActionRecord:
+        if action_type not in REVIEW_ACTION_TYPES:
+            supported = ", ".join(sorted(REVIEW_ACTION_TYPES))
+            raise ContractUploadError(f"Unsupported review action: {action_type}. Supported: {supported}.")
+
+        task = self.get_task(task_id)
+        if task is None:
+            raise ContractUploadError("Task does not exist.")
+
+        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        action = ReviewActionRecord(
+            id=f"review-{uuid.uuid4().hex[:12]}",
+            task_id=task_id,
+            target_type=target_type,
+            target_id=target_id,
+            action_type=action_type,
+            actor=actor or "reviewer",
+            comment=comment,
+            revised_payload=revised_payload or {},
+            created_at=now,
+        )
+        updated_task = self._apply_review_action(task, action)
+        self._persist_task(updated_task, "recorded manual review action")
+        return action
 
     def _bootstrap_if_needed(self) -> None:
         if self._use_postgres():
@@ -133,6 +267,7 @@ class TaskRepository:
     def _ensure_dirs(self) -> None:
         self.settings.data_dir.mkdir(parents=True, exist_ok=True)
         self.settings.upload_dir.mkdir(parents=True, exist_ok=True)
+        self.settings.report_dir.mkdir(parents=True, exist_ok=True)
 
     def _backup_corrupt_store(self) -> Path:
         self._ensure_dirs()
@@ -175,6 +310,72 @@ class TaskRepository:
     def _postgres_store(self) -> PostgresTaskStore:
         return PostgresTaskStore(self.settings)
 
+    def _persist_task(self, task: TaskRecord, event_message: str) -> None:
+        if self._use_postgres():
+            self._postgres_store().upsert_task(task, event_message=event_message)
+            return
+        tasks = [candidate for candidate in self.list_tasks() if candidate.id != task.id]
+        tasks.insert(0, task)
+        self._save_tasks(tasks)
+
+    def _apply_review_action(self, task: TaskRecord, action: ReviewActionRecord) -> TaskRecord:
+        review_status = REVIEW_STATUS_BY_ACTION[action.action_type]
+        updated_risks = []
+        for risk in task.risks:
+            if action.target_type == "rule_hit" and risk.rule_id == action.target_id:
+                updates = {
+                    "review_status": review_status,
+                    "reviewer_comment": action.comment,
+                }
+                if action.action_type == "rewrite_suggestion":
+                    if "action" in action.revised_payload:
+                        updates["action"] = str(action.revised_payload["action"])
+                    if "reason" in action.revised_payload:
+                        updates["reason"] = str(action.revised_payload["reason"])
+                updated_risks.append(risk.model_copy(update=updates))
+            else:
+                updated_risks.append(risk)
+
+        trace = list(task.agent_trace)
+        trace.append(
+            AgentTraceEvent(
+                at=action.created_at,
+                type="review.action",
+                message=f"Manual review action recorded: {action.action_type} {action.target_type}:{action.target_id}",
+                payload=action.model_dump(),
+            )
+        )
+        return task.model_copy(
+            update={
+                "risks": updated_risks,
+                "review_actions": [*task.review_actions, action],
+                "agent_trace": trace,
+            }
+        )
+
+    def _write_report_snapshot(self, task: TaskRecord) -> TaskRecord:
+        if task.report_snapshot is None:
+            return task
+
+        snapshot = task.report_snapshot
+        version = snapshot.version or 1
+        target_dir = self.settings.report_dir / task.id
+        target_dir.mkdir(parents=True, exist_ok=True)
+        target_path = target_dir / f"report-v{version}.md"
+        report_text = render_report_markdown(task, snapshot)
+        target_path.write_text(report_text, encoding="utf-8")
+        file_sha256 = hashlib.sha256(report_text.encode("utf-8")).hexdigest()
+        source_hash = task.stored_file.sha256 if task.stored_file else snapshot.source_file_sha256
+        updated_snapshot = snapshot.model_copy(
+            update={
+                "version": version,
+                "source_file_sha256": source_hash,
+                "file_path": str(target_path),
+                "file_sha256": file_sha256,
+            }
+        )
+        return task.model_copy(update={"report_snapshot": updated_snapshot})
+
 
 def decode_contract_bytes(payload: bytes) -> str:
     for encoding in ("utf-8", "utf-8-sig", "gb18030", "gbk"):
@@ -192,3 +393,44 @@ def sanitize_filename(filename: str) -> str:
     if not clean_name:
         return "contract.txt"
     return clean_name.replace("\x00", "")
+
+
+def render_report_markdown(task: TaskRecord, snapshot: ReportSnapshot) -> str:
+    lines = [
+        f"# {snapshot.title}",
+        "",
+        f"- Task ID: {task.id}",
+        f"- Source file: {task.source_filename}",
+        f"- Original SHA256: {task.stored_file.sha256 if task.stored_file else 'unknown'}",
+        f"- Rule version: {snapshot.rule_version}",
+        f"- Report version: {snapshot.version}",
+        f"- Generated at: {snapshot.generated_at}",
+        "",
+        "## Summary",
+        "",
+        snapshot.summary,
+        "",
+        "## Recommendation",
+        "",
+        snapshot.recommendation,
+        "",
+        "## Rule hits",
+        "",
+    ]
+    if not task.risks:
+        lines.append("- No rule hits.")
+    for risk in task.risks:
+        evidence = ", ".join(risk.evidence_clause_ids) or "none"
+        policy = ", ".join(risk.policy_reference_ids) or "none"
+        lines.extend(
+            [
+                f"- {risk.rule_id} ({risk.level}, {risk.rule_version})",
+                f"  - Title: {risk.title}",
+                f"  - Evidence clauses: {evidence}",
+                f"  - Policy references: {policy}",
+                f"  - Review status: {risk.review_status}",
+                f"  - Action: {risk.action}",
+            ]
+        )
+    lines.append("")
+    return "\n".join(lines)

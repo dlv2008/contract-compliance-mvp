@@ -75,6 +75,42 @@ def test_create_task_and_fetch_review_payload(client: TestClient) -> None:
     assert any(event["type"] == "rule.evaluate" for event in review_task["trace"])
     assert review_task["report"]["summary"]
 
+    clauses_response = client.get(f"/api/tasks/{task['id']}/clauses")
+    facts_response = client.get(f"/api/tasks/{task['id']}/facts")
+    rule_hits_response = client.get(f"/api/tasks/{task['id']}/rule-hits")
+    reports_response = client.get(f"/api/tasks/{task['id']}/report-snapshots")
+
+    assert clauses_response.status_code == 200
+    assert facts_response.status_code == 200
+    assert rule_hits_response.status_code == 200
+    assert reports_response.status_code == 200
+    assert clauses_response.json()["items"][0]["clause_id"]
+    assert any(item["fact_key"] == "payment.prepay_ratio" for item in facts_response.json()["items"])
+    assert any(item["rule_id"] == "FIN-PUR-003" for item in rule_hits_response.json()["items"])
+
+    report_item = reports_response.json()["items"][0]
+    assert report_item["file_path"]
+    assert Path(report_item["file_path"]).exists()
+    assert report_item["source_file_sha256"]
+
+    review_action_response = client.post(
+        f"/api/tasks/{task['id']}/review-actions",
+        json={
+            "target_type": "rule_hit",
+            "target_id": "FIN-PUR-003",
+            "action_type": "request_evidence",
+            "comment": "Need approval evidence.",
+        },
+    )
+    assert review_action_response.status_code == 201
+
+    actions_response = client.get(f"/api/tasks/{task['id']}/review-actions")
+    updated_hits_response = client.get(f"/api/tasks/{task['id']}/rule-hits")
+    updated_hits = updated_hits_response.json()["items"]
+
+    assert actions_response.json()["items"][0]["action_type"] == "request_evidence"
+    assert next(item for item in updated_hits if item["rule_id"] == "FIN-PUR-003")["review_status"] == "evidence_requested"
+
 
 def test_rejects_unsupported_upload_type(client: TestClient) -> None:
     response = client.post(

@@ -116,6 +116,7 @@ def _max_upload_bytes() -> int:
 class Settings:
     data_dir: Path
     upload_dir: Path
+    report_dir: Path
     task_store_path: Path
     task_store_backend: str
     database_url: str | None
@@ -129,6 +130,8 @@ class Settings:
     minio_secure: bool
     ragflow_base_url: str
     ragflow_api_key: str | None
+    ragflow_contract_dataset_id: str | None
+    ragflow_policy_dataset_ids: list[str]
     bootstrap_samples: bool
     max_upload_bytes: int
     llm_base_url: str
@@ -144,6 +147,7 @@ def get_settings() -> Settings:
     env_file_path = str(_LOADED_ENV_PATH) if _LOADED_ENV_PATH is not None else None
     data_dir = Path(_first_setting("CONTRACT_COMPLIANCE_DATA_DIR", default=str(API_ROOT / "data")))
     upload_dir = Path(_first_setting("CONTRACT_COMPLIANCE_UPLOAD_DIR", "UPLOAD_DIR", default=str(data_dir / "uploads")))
+    report_dir = Path(_first_setting("CONTRACT_COMPLIANCE_REPORT_DIR", "REPORT_DIR", default=str(data_dir / "reports")))
     task_store_path = Path(_first_setting("CONTRACT_COMPLIANCE_TASK_STORE", default=str(data_dir / "tasks.json")))
     task_store_backend = _first_setting("CONTRACT_COMPLIANCE_TASK_STORE_BACKEND", "TASK_STORE_BACKEND", default="json").strip().lower()
     database_url = _normalize_database_url(
@@ -170,6 +174,12 @@ def get_settings() -> Settings:
     minio_secure = _flag("MINIO_SECURE", False)
     ragflow_base_url = _setting("RAGFLOW_BASE_URL", "http://127.0.0.1:9380").rstrip("/")
     ragflow_api_key = _setting("RAGFLOW_API_KEY")
+    ragflow_contract_dataset_id = _setting("RAGFLOW_CONTRACT_DATASET_ID")
+    ragflow_policy_dataset_ids = [
+        item.strip()
+        for item in (_setting("RAGFLOW_POLICY_DATASET_IDS", "") or "").split(",")
+        if item.strip()
+    ]
     bootstrap_samples = _flag("CONTRACT_COMPLIANCE_BOOTSTRAP_SAMPLES", True)
     max_upload_bytes = _max_upload_bytes()
     llm_base_url = _setting("LLM_BASE_URL", "https://gen.trendbot.cn/v1").rstrip("/")
@@ -181,6 +191,7 @@ def get_settings() -> Settings:
     return Settings(
         data_dir=data_dir,
         upload_dir=upload_dir,
+        report_dir=report_dir,
         task_store_path=task_store_path,
         task_store_backend=task_store_backend,
         database_url=database_url,
@@ -194,6 +205,8 @@ def get_settings() -> Settings:
         minio_secure=minio_secure,
         ragflow_base_url=ragflow_base_url,
         ragflow_api_key=ragflow_api_key,
+        ragflow_contract_dataset_id=ragflow_contract_dataset_id,
+        ragflow_policy_dataset_ids=ragflow_policy_dataset_ids,
         bootstrap_samples=bootstrap_samples,
         max_upload_bytes=max_upload_bytes,
         llm_base_url=llm_base_url,

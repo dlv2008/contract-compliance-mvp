@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field
 
 from app.services.db_store import DatabaseProbeClient
 from app.services.llm import LLMClient
@@ -12,6 +13,15 @@ from app.services.storage import ContractUploadError, TaskRepository, TaskStorag
 
 
 router = APIRouter()
+
+
+class ReviewActionRequest(BaseModel):
+    target_type: str = Field(default="rule_hit")
+    target_id: str
+    action_type: str
+    actor: str = "reviewer"
+    comment: str | None = None
+    revised_payload: dict = Field(default_factory=dict)
 
 
 @router.get("/tasks")
@@ -65,6 +75,62 @@ def get_task(task_id: str) -> dict:
     }
 
 
+@router.get("/tasks/{task_id}/clauses")
+def list_task_clauses(task_id: str) -> dict:
+    repository = TaskRepository()
+    _ensure_task_exists(repository, task_id)
+    return {"items": repository.list_document_clauses(task_id)}
+
+
+@router.get("/tasks/{task_id}/facts")
+def list_task_facts(task_id: str) -> dict:
+    repository = TaskRepository()
+    _ensure_task_exists(repository, task_id)
+    return {"items": repository.list_extracted_facts(task_id)}
+
+
+@router.get("/tasks/{task_id}/rule-hits")
+def list_task_rule_hits(task_id: str) -> dict:
+    repository = TaskRepository()
+    _ensure_task_exists(repository, task_id)
+    return {"items": repository.list_rule_hits(task_id)}
+
+
+@router.get("/tasks/{task_id}/review-actions")
+def list_task_review_actions(task_id: str) -> dict:
+    repository = TaskRepository()
+    _ensure_task_exists(repository, task_id)
+    return {"items": repository.list_review_actions(task_id)}
+
+
+@router.post("/tasks/{task_id}/review-actions", status_code=201)
+def create_task_review_action(task_id: str, payload: ReviewActionRequest) -> JSONResponse:
+    repository = TaskRepository()
+    _ensure_task_exists(repository, task_id)
+    try:
+        action = repository.record_review_action(
+            task_id,
+            target_type=payload.target_type,
+            target_id=payload.target_id,
+            action_type=payload.action_type,
+            actor=payload.actor,
+            comment=payload.comment,
+            revised_payload=payload.revised_payload,
+        )
+    except ContractUploadError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except TaskStorageError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return JSONResponse(status_code=201, content={"action": action.model_dump()})
+
+
+@router.get("/tasks/{task_id}/report-snapshots")
+def list_task_report_snapshots(task_id: str) -> dict:
+    repository = TaskRepository()
+    _ensure_task_exists(repository, task_id)
+    return {"items": repository.list_report_snapshots(task_id)}
+
+
 @router.get("/ragflow/health")
 def ragflow_health() -> dict:
     return RagflowClient().probe().model_dump()
@@ -96,3 +162,12 @@ def system_status() -> dict:
         "ragflow": RagflowClient().probe().model_dump(),
         "llm": LLMClient().probe().model_dump(),
     }
+
+
+def _ensure_task_exists(repository: TaskRepository, task_id: str) -> None:
+    try:
+        task = repository.get_task(task_id)
+    except TaskStorageError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    if task is None:
+        raise HTTPException(status_code=404, detail="Task does not exist.")

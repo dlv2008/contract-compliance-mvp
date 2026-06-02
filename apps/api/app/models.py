@@ -27,6 +27,63 @@ class RiskFinding(BaseModel):
     evidence_clause_ids: list[str] = Field(default_factory=list)
     policy_reference_ids: list[str] = Field(default_factory=list)
     action: str
+    rule_version: str = "mvp-rules-v1"
+    review_status: str = "pending"
+    reviewer_comment: str | None = None
+
+
+class DocumentClauseRecord(BaseModel):
+    task_id: str
+    clause_id: str
+    title: str
+    text: str
+    status: str = "ok"
+    sequence_no: int = 0
+    parser_source: str = "local"
+    chunk_id: str | None = None
+    page_start: int | None = None
+    page_end: int | None = None
+    positions: dict = Field(default_factory=dict)
+    version: int = 1
+
+
+class ExtractedFactRecord(BaseModel):
+    task_id: str
+    fact_key: str
+    label: str
+    value: str
+    status: str = "present"
+    evidence_clause_ids: list[str] = Field(default_factory=list)
+    extractor: str = "deterministic-mvp"
+    schema_version: str = "mvp-facts-v1"
+
+
+class RuleHitRecord(BaseModel):
+    task_id: str
+    rule_id: str
+    rule_version: str = "mvp-rules-v1"
+    title: str
+    level: str
+    message: str
+    reason: str
+    evidence_clause_ids: list[str] = Field(default_factory=list)
+    policy_reference_ids: list[str] = Field(default_factory=list)
+    action: str
+    engine: str = "deterministic"
+    review_status: str = "pending"
+    reviewer_comment: str | None = None
+
+
+class ReviewActionRecord(BaseModel):
+    id: str
+    task_id: str
+    target_type: str
+    target_id: str
+    action_type: str
+    actor: str = "reviewer"
+    comment: str | None = None
+    revised_payload: dict = Field(default_factory=dict)
+    created_at: str
 
 
 class WorkflowStep(BaseModel):
@@ -60,6 +117,11 @@ class ReportSnapshot(BaseModel):
     summary: str
     recommendation: str
     generated_at: str
+    version: int = 1
+    rule_version: str = "mvp-rules-v1"
+    source_file_sha256: str | None = None
+    file_path: str | None = None
+    file_sha256: str | None = None
 
 
 class TaskRecord(BaseModel):
@@ -81,6 +143,7 @@ class TaskRecord(BaseModel):
     clauses: list[Clause] = Field(default_factory=list)
     extracted_fields: list[ExtractedField] = Field(default_factory=list)
     risks: list[RiskFinding] = Field(default_factory=list)
+    review_actions: list[ReviewActionRecord] = Field(default_factory=list)
     workflow_steps: list[WorkflowStep] = Field(default_factory=list)
     agent_trace: list[AgentTraceEvent] = Field(default_factory=list)
     report_snapshot: ReportSnapshot | None = None
