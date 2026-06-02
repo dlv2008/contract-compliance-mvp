@@ -110,6 +110,7 @@ def review(task_id: str, request: Request) -> HTMLResponse:
                 LLMClient().probe(),
                 DatabaseProbeClient().probe(),
                 ObjectStore().probe(),
+                TaskRepository().list_report_snapshots(task_id),
             ),
         },
     )
@@ -152,6 +153,23 @@ def create_task_decision(
         TaskRepository().record_task_decision(
             task_id,
             action_type=action_type,
+            comment=comment,
+        )
+    except ContractUploadError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except TaskStorageError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return RedirectResponse(url=f"/reviews/{task_id}", status_code=303)
+
+
+@router.post("/reviews/{task_id}/reports")
+def generate_report(
+    task_id: str,
+    comment: str | None = Form(default=None),
+) -> RedirectResponse:
+    try:
+        TaskRepository().generate_delivery_report(
+            task_id,
             comment=comment,
         )
     except ContractUploadError as exc:

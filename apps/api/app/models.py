@@ -118,6 +118,9 @@ class ReportSnapshot(BaseModel):
     recommendation: str
     generated_at: str
     version: int = 1
+    report_type: str = "process_snapshot"
+    report_type_label: str = "过程快照"
+    generated_by: str = "system"
     rule_version: str = "mvp-rules-v1"
     source_file_sha256: str | None = None
     file_path: str | None = None

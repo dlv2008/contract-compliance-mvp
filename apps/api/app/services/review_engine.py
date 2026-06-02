@@ -193,6 +193,7 @@ def build_review_payload(
     llm: LLMProbe,
     database: DatabaseProbe | None = None,
     object_storage: ObjectStorageProbe | None = None,
+    report_snapshots: list[dict] | None = None,
 ) -> dict[str, Any]:
     high_count = sum(risk.level == "high" for risk in task.risks)
     resolved_count = sum(risk.review_status in {"confirmed", "rejected", "revised"} for risk in task.risks)
@@ -310,17 +311,40 @@ def build_review_payload(
                 "recommendation": task.report_snapshot.recommendation,
                 "generated_at": task.report_snapshot.generated_at,
                 "version": task.report_snapshot.version,
+                "report_type": task.report_snapshot.report_type,
+                "report_type_label": task.report_snapshot.report_type_label,
+                "generated_by": task.report_snapshot.generated_by,
                 "file_sha256": task.report_snapshot.file_sha256,
                 "file_path": task.report_snapshot.file_path,
             }
             if task.report_snapshot
             else None
         ),
+        "report_history": build_report_history_payload(report_snapshots or []),
         "ragflow": build_ragflow_payload(ragflow),
         "llm": build_llm_payload(llm),
         "database": build_database_payload(database),
         "object_storage": build_object_storage_payload(object_storage),
     }
+
+
+def build_report_history_payload(report_snapshots: list[dict]) -> list[dict[str, Any]]:
+    history: list[dict[str, Any]] = []
+    for snapshot in report_snapshots:
+        report_type = snapshot.get("report_type") or "process_snapshot"
+        history.append(
+            {
+                "version": snapshot.get("version"),
+                "title": snapshot.get("title"),
+                "report_type": report_type,
+                "report_type_label": "交付报告" if report_type == "delivery_report" else "过程快照",
+                "generated_by": snapshot.get("generated_by") or "system",
+                "generated_at": snapshot.get("generated_at"),
+                "file_sha256": snapshot.get("file_sha256"),
+                "file_path": snapshot.get("file_path"),
+            }
+        )
+    return history
 
 
 def build_task_summary(task: TaskRecord) -> dict[str, str]:
@@ -1022,6 +1046,7 @@ def render_review_action(action_type: str) -> str:
         "return_materials": "退回补材料",
         "require_revision": "要求整改",
         "archive": "归档",
+        "generate_delivery_report": "生成交付报告",
     }
     return labels.get(action_type, action_type)
 
@@ -1083,14 +1108,25 @@ def build_agent_trace(
     ]
 
 
-def build_report_snapshot(name: str, risks: list[RiskFinding], decision: str) -> ReportSnapshot:
+def build_report_snapshot(
+    name: str,
+    risks: list[RiskFinding],
+    decision: str,
+    report_type: str = "process_snapshot",
+    generated_by: str = "system",
+) -> ReportSnapshot:
     high_count = sum(risk.level == "high" for risk in risks)
     medium_count = sum(risk.level == "medium" for risk in risks)
+    report_type_label = "交付报告" if report_type == "delivery_report" else "过程快照"
+    title_suffix = "审查交付报告" if report_type == "delivery_report" else "审查报告快照"
     return ReportSnapshot(
-        title=f"{name} 审查报告快照",
+        title=f"{name} {title_suffix}",
         summary=f"系统识别 {len(risks)} 条风险，其中高风险 {high_count} 条、中风险 {medium_count} 条。",
         recommendation=build_report_recommendation(risks, decision),
         generated_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        report_type=report_type,
+        report_type_label=report_type_label,
+        generated_by=generated_by,
     )
 
 

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 from pydantic import BaseModel, Field
 
 from app.services.db_store import DatabaseProbeClient
@@ -26,6 +26,11 @@ class ReviewActionRequest(BaseModel):
 
 class TaskDecisionRequest(BaseModel):
     action_type: str
+    actor: str = "reviewer"
+    comment: str | None = None
+
+
+class GenerateReportRequest(BaseModel):
     actor: str = "reviewer"
     comment: str | None = None
 
@@ -64,8 +69,9 @@ async def create_task(
 
 @router.get("/tasks/{task_id}")
 def get_task(task_id: str) -> dict:
+    repository = TaskRepository()
     try:
-        task = TaskRepository().get_task(task_id)
+        task = repository.get_task(task_id)
     except TaskStorageError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     if task is None:
@@ -77,6 +83,7 @@ def get_task(task_id: str) -> dict:
             LLMClient().probe(),
             DatabaseProbeClient().probe(),
             ObjectStore().probe(),
+            repository.list_report_snapshots(task_id),
         )
     }
 
@@ -153,6 +160,36 @@ def list_task_report_snapshots(task_id: str) -> dict:
     repository = TaskRepository()
     _ensure_task_exists(repository, task_id)
     return {"items": repository.list_report_snapshots(task_id)}
+
+
+@router.post("/tasks/{task_id}/reports", status_code=201)
+def generate_task_report(task_id: str, payload: GenerateReportRequest) -> JSONResponse:
+    repository = TaskRepository()
+    _ensure_task_exists(repository, task_id)
+    try:
+        report = repository.generate_delivery_report(
+            task_id,
+            actor=payload.actor,
+            comment=payload.comment,
+        )
+    except ContractUploadError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except TaskStorageError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return JSONResponse(status_code=201, content={"report": report.model_dump()})
+
+
+@router.get("/tasks/{task_id}/reports/{version}")
+def get_task_report_markdown(task_id: str, version: int) -> PlainTextResponse:
+    repository = TaskRepository()
+    _ensure_task_exists(repository, task_id)
+    try:
+        content = repository.read_report_markdown(task_id, version)
+    except ContractUploadError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except TaskStorageError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return PlainTextResponse(content, media_type="text/markdown; charset=utf-8")
 
 
 @router.get("/ragflow/health")

@@ -140,6 +140,24 @@ def test_create_task_and_fetch_review_payload(client: TestClient) -> None:
     assert any(item["target_type"] == "task" for item in finalized_actions)
     assert any(item["action_type"] == "return_materials" for item in finalized_actions)
 
+    generated_report_response = client.post(
+        f"/api/tasks/{task['id']}/reports",
+        json={
+            "comment": "Generate delivery report for archive.",
+        },
+    )
+    assert generated_report_response.status_code == 201
+    generated_report = generated_report_response.json()["report"]
+
+    assert generated_report["version"] == 4
+    assert generated_report["report_type"] == "delivery_report"
+    assert generated_report["file_sha256"]
+
+    report_markdown_response = client.get(f"/api/tasks/{task['id']}/reports/{generated_report['version']}")
+    assert report_markdown_response.status_code == 200
+    assert "Report type: 交付报告 (delivery_report)" in report_markdown_response.text
+    assert "## Review actions" in report_markdown_response.text
+
 
 def test_rejects_unsupported_upload_type(client: TestClient) -> None:
     response = client.post(
@@ -181,6 +199,7 @@ def test_dashboard_and_review_pages_render_created_task(client: TestClient) -> N
     review_response = client.get(review_url)
     assert review_response.status_code == 200
     assert "/task-decision" in review_response.text
+    assert "/reports" in review_response.text
     assert "RAGFlow 状态" in review_response.text
     assert "模型服务" in review_response.text
     assert "高风险" in review_response.text

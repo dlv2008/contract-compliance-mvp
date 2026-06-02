@@ -258,25 +258,62 @@
 {% if data.report %}
 <section class="panel report-panel">
     <div class="panel-head">
-        <h3>报告快照</h3>
-        <span class="state-outline">v{{ data.report.version }}</span>
+        <div>
+            <h3>报告交付</h3>
+            <p class="panel-subtitle">过程快照用于留痕，交付报告由审查员显式生成。</p>
+        </div>
+        <span class="state-outline">v{{ data.report.version }} · {{ data.report.report_type_label }}</span>
     </div>
-    <p>{{ data.report.summary }}</p>
-    <p class="risk-action">{{ data.report.recommendation }}</p>
-    <dl class="report-meta">
+    <div class="report-delivery-grid">
         <div>
-            <dt>生成时间</dt>
-            <dd>{{ data.report.generated_at }}</dd>
+            <p>{{ data.report.summary }}</p>
+            <p class="risk-action">{{ data.report.recommendation }}</p>
+            <dl class="report-meta">
+                <div>
+                    <dt>生成时间</dt>
+                    <dd>{{ data.report.generated_at }}</dd>
+                </div>
+                <div>
+                    <dt>生成者</dt>
+                    <dd>{{ data.report.generated_by }}</dd>
+                </div>
+                <div>
+                    <dt>文件 hash</dt>
+                    <dd>{{ data.report.file_sha256 }}</dd>
+                </div>
+                <div>
+                    <dt>文件路径</dt>
+                    <dd>{{ data.report.file_path }}</dd>
+                </div>
+                <div>
+                    <dt>预览</dt>
+                    <dd><a href="/api/tasks/{{ data.task.id }}/reports/{{ data.report.version }}" target="_blank">Markdown</a></dd>
+                </div>
+            </dl>
         </div>
-        <div>
-            <dt>文件 hash</dt>
-            <dd>{{ data.report.file_sha256 }}</dd>
+        <form class="report-generate-form" action="/reviews/{{ data.task.id }}/reports" method="post">
+            <strong>生成交付报告</strong>
+            <textarea name="comment" rows="4" placeholder="报告生成说明"></textarea>
+            <button type="submit">生成交付报告</button>
+        </form>
+    </div>
+
+    {% if data.report_history %}
+    <div class="report-history">
+        <div class="panel-head">
+            <h3>报告历史</h3>
         </div>
-        <div>
-            <dt>文件路径</dt>
-            <dd>{{ data.report.file_path }}</dd>
+        <div class="report-history-list">
+            {% for report in data.report_history %}
+            <a class="report-history-item report-history-{{ report.report_type }}" href="/api/tasks/{{ data.task.id }}/reports/{{ report.version }}" target="_blank">
+                <span>v{{ report.version }}</span>
+                <strong>{{ report.report_type_label }}</strong>
+                <small>{{ report.generated_at }}</small>
+            </a>
+            {% endfor %}
         </div>
-    </dl>
+    </div>
+    {% endif %}
 </section>
 {% endif %}
 {% endblock %}

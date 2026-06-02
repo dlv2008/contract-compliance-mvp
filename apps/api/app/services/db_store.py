@@ -134,6 +134,8 @@ CREATE TABLE IF NOT EXISTS report_snapshot (
     title TEXT NOT NULL,
     summary TEXT NOT NULL,
     recommendation TEXT NOT NULL,
+    report_type TEXT NOT NULL DEFAULT 'process_snapshot',
+    generated_by TEXT NOT NULL DEFAULT 'system',
     rule_version TEXT NOT NULL DEFAULT 'mvp-rules-v1',
     source_file_sha256 TEXT,
     file_path TEXT,
@@ -145,6 +147,9 @@ CREATE TABLE IF NOT EXISTS report_snapshot (
 );
 
 CREATE INDEX IF NOT EXISTS idx_report_snapshot_task_id ON report_snapshot (task_id, version DESC);
+
+ALTER TABLE report_snapshot ADD COLUMN IF NOT EXISTS report_type TEXT NOT NULL DEFAULT 'process_snapshot';
+ALTER TABLE report_snapshot ADD COLUMN IF NOT EXISTS generated_by TEXT NOT NULL DEFAULT 'system';
 """
 
 
@@ -276,7 +281,8 @@ class PostgresTaskStore:
         return self._select_dicts(
             """
             SELECT task_id, version, title, summary, recommendation, rule_version,
-                   source_file_sha256, file_path, file_sha256, generated_at, created_at
+                   report_type, generated_by, source_file_sha256, file_path,
+                   file_sha256, generated_at, created_at
             FROM report_snapshot
             WHERE task_id = %s
             ORDER BY version DESC
@@ -435,14 +441,16 @@ class PostgresTaskStore:
             cur.execute(
                 """
                 INSERT INTO report_snapshot (
-                    task_id, version, title, summary, recommendation, rule_version,
+                    task_id, version, title, summary, recommendation, report_type, generated_by, rule_version,
                     source_file_sha256, file_path, file_sha256, payload, generated_at
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (task_id, version) DO UPDATE SET
                     title = EXCLUDED.title,
                     summary = EXCLUDED.summary,
                     recommendation = EXCLUDED.recommendation,
+                    report_type = EXCLUDED.report_type,
+                    generated_by = EXCLUDED.generated_by,
                     rule_version = EXCLUDED.rule_version,
                     source_file_sha256 = EXCLUDED.source_file_sha256,
                     file_path = EXCLUDED.file_path,
@@ -456,6 +464,8 @@ class PostgresTaskStore:
                     snapshot.title,
                     snapshot.summary,
                     snapshot.recommendation,
+                    snapshot.report_type,
+                    snapshot.generated_by,
                     snapshot.rule_version,
                     snapshot.source_file_sha256,
                     snapshot.file_path,
