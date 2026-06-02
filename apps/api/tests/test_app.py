@@ -111,6 +111,16 @@ def test_create_task_and_fetch_review_payload(client: TestClient) -> None:
     assert actions_response.json()["items"][0]["action_type"] == "request_evidence"
     assert next(item for item in updated_hits if item["rule_id"] == "FIN-PUR-003")["review_status"] == "evidence_requested"
 
+    updated_reports_response = client.get(f"/api/tasks/{task['id']}/report-snapshots")
+    updated_reports = updated_reports_response.json()["items"]
+    updated_detail_response = client.get(f"/api/tasks/{task['id']}")
+    updated_detail = updated_detail_response.json()["task"]
+
+    assert updated_reports[0]["version"] == 2
+    assert updated_reports[0]["file_sha256"]
+    assert updated_detail["report"]["version"] == 2
+    assert next(item for item in updated_detail["risks"] if item["rule"] == "FIN-PUR-003")["review_status_label"] == "待补证据"
+
 
 def test_rejects_unsupported_upload_type(client: TestClient) -> None:
     response = client.post(

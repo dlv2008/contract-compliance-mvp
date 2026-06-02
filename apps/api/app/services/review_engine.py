@@ -30,11 +30,14 @@ STATUS_LABELS = {
     "pending_review": "待复核",
     "watchlist": "需关注",
     "ready": "建议通过",
+    "review_completed": "复核完成",
 }
 DECISION_LABELS = {
     "manual_review": "人工复核",
     "review_recommended": "建议复核",
     "pass": "建议通过",
+    "revision_required": "建议整改",
+    "conditional_pass": "附条件通过",
 }
 FIELD_LABELS = {
     "contract_name": "合同名称",
@@ -185,7 +188,8 @@ def build_review_payload(
     object_storage: ObjectStorageProbe | None = None,
 ) -> dict[str, Any]:
     high_count = sum(risk.level == "high" for risk in task.risks)
-    medium_count = sum(risk.level == "medium" for risk in task.risks)
+    resolved_count = sum(risk.review_status in {"confirmed", "rejected", "revised"} for risk in task.risks)
+    pending_count = len(task.risks) - resolved_count
     top_rule = task.risks[0].rule_id if task.risks else "未命中"
     return {
         "task": {
@@ -193,13 +197,14 @@ def build_review_payload(
             "name": task.name,
             "status": task.status_label,
             "risk": task.overall_risk_label,
+            "decision": task.decision_label,
             "contract_type": task.contract_type_label,
             "state_class": overall_risk_to_state_class(task.overall_risk),
         },
         "summary_cards": [
             {"label": "总风险数", "value": str(len(task.risks))},
             {"label": "高风险", "value": str(high_count)},
-            {"label": "中风险", "value": str(medium_count)},
+            {"label": "待处理", "value": str(pending_count)},
             {"label": "首要规则", "value": top_rule},
         ],
         "clauses": [
@@ -232,8 +237,24 @@ def build_review_payload(
                 "evidence": "、".join(risk.evidence_clause_ids) or "未定位",
                 "policy": " / ".join(render_policy_reference(policy_id) for policy_id in risk.policy_reference_ids),
                 "action": risk.action,
+                "review_status": risk.review_status,
+                "review_status_label": render_review_status(risk.review_status),
+                "reviewer_comment": risk.reviewer_comment,
             }
             for risk in task.risks
+        ],
+        "review_actions": [
+            {
+                "id": action.id,
+                "target_type": action.target_type,
+                "target_id": action.target_id,
+                "action_type": action.action_type,
+                "action_label": render_review_action(action.action_type),
+                "actor": action.actor,
+                "comment": action.comment,
+                "created_at": action.created_at,
+            }
+            for action in sorted(task.review_actions, key=lambda item: item.created_at, reverse=True)
         ],
         "workflow_steps": [
             {
@@ -258,6 +279,9 @@ def build_review_payload(
                 "summary": task.report_snapshot.summary,
                 "recommendation": task.report_snapshot.recommendation,
                 "generated_at": task.report_snapshot.generated_at,
+                "version": task.report_snapshot.version,
+                "file_sha256": task.report_snapshot.file_sha256,
+                "file_path": task.report_snapshot.file_path,
             }
             if task.report_snapshot
             else None
@@ -787,7 +811,9 @@ def derive_overall_risk(risks: list[RiskFinding]) -> str:
     return "green"
 
 
-def derive_status(overall_risk: str) -> str:
+def derive_status(overall_risk: str, risks: list[RiskFinding] | None = None) -> str:
+    if risks is not None and risks and all(is_review_resolved(risk) for risk in risks):
+        return "review_completed"
     if overall_risk == "red":
         return "pending_review"
     if overall_risk == "yellow":
@@ -795,12 +821,21 @@ def derive_status(overall_risk: str) -> str:
     return "ready"
 
 
-def derive_decision(overall_risk: str) -> str:
+def derive_decision(overall_risk: str, risks: list[RiskFinding] | None = None) -> str:
+    if risks is not None and risks and all(is_review_resolved(risk) for risk in risks):
+        if overall_risk == "red":
+            return "revision_required"
+        if overall_risk == "yellow":
+            return "conditional_pass"
     if overall_risk == "red":
         return "manual_review"
     if overall_risk == "yellow":
         return "review_recommended"
     return "pass"
+
+
+def is_review_resolved(risk: RiskFinding) -> bool:
+    return risk.review_status in {"confirmed", "rejected", "revised"}
 
 
 def build_summary(risks: list[RiskFinding]) -> str:
@@ -920,6 +955,27 @@ def render_policy_reference(policy_id: str) -> str:
     return policy_id
 
 
+def render_review_status(status: str) -> str:
+    labels = {
+        "pending": "待复核",
+        "confirmed": "已确认",
+        "rejected": "已驳回",
+        "revised": "已改写",
+        "evidence_requested": "待补证据",
+    }
+    return labels.get(status, status)
+
+
+def render_review_action(action_type: str) -> str:
+    labels = {
+        "confirm": "确认风险",
+        "reject": "驳回命中",
+        "rewrite_suggestion": "改写建议",
+        "request_evidence": "要求补证据",
+    }
+    return labels.get(action_type, action_type)
+
+
 def build_workflow_steps(created_at: str, status: str) -> list[WorkflowStep]:
     review_status = "waiting" if status == "pending_review" else "done"
     return [
@@ -993,6 +1049,10 @@ def build_report_recommendation(risks: list[RiskFinding], decision: str) -> str:
         return "建议完成人工抽样复核后进入签署或执行流程。"
     if decision == "manual_review":
         return "建议审查人优先处理高风险项，补齐依据材料后再确认是否放行。"
+    if decision == "revision_required":
+        return "人工复核已完成，仍存在有效高风险项，建议完成条款整改或例外审批后再进入签署流程。"
     if decision == "review_recommended":
         return "建议结合业务背景复核中风险项，必要时补充条款和审批依据。"
+    if decision == "conditional_pass":
+        return "人工复核已完成，当前仍存在中风险提示，建议带条件通过并在归档材料中保留处理说明。"
     return "当前审查结果可作为后续报告与归档的基础版本。"

@@ -8,6 +8,7 @@
     </div>
     <div class="review-state">
         <span class="{{ data.task.state_class }}">{{ data.task.risk }}</span>
+        <span class="state-outline">{{ data.task.decision }}</span>
         <span class="state-outline">任务编号 {{ data.task.id }}</span>
     </div>
 </section>
@@ -63,7 +64,7 @@
 
     <aside class="panel right-rail">
         <div class="panel-head">
-            <h3>风险卡片</h3>
+            <h3>风险复核工作台</h3>
         </div>
         <div class="risk-stack">
             {% if data.risks %}
@@ -72,6 +73,12 @@
                 <div class="risk-top">
                     <strong>{{ risk.title }}</strong>
                     <span>{{ risk.rule }}</span>
+                </div>
+                <div class="review-status-line">
+                    <span class="review-status review-status-{{ risk.review_status }}">{{ risk.review_status_label }}</span>
+                    {% if risk.reviewer_comment %}
+                    <small>{{ risk.reviewer_comment }}</small>
+                    {% endif %}
                 </div>
                 <p>{{ risk.reason }}</p>
                 <dl class="risk-meta">
@@ -85,12 +92,50 @@
                     </div>
                 </dl>
                 <p class="risk-action">{{ risk.action }}</p>
+                <form class="review-form" action="/reviews/{{ data.task.id }}/actions" method="post">
+                    <input type="hidden" name="target_id" value="{{ risk.rule }}" />
+                    <textarea name="comment" rows="2" placeholder="复核意见"></textarea>
+                    <div class="review-button-row">
+                        <button type="submit" name="action_type" value="confirm">确认</button>
+                        <button type="submit" name="action_type" value="reject">驳回</button>
+                        <button type="submit" name="action_type" value="request_evidence">补证据</button>
+                    </div>
+                    <div class="rewrite-row">
+                        <input name="revised_action" type="text" placeholder="改写后的处理建议" />
+                        <button type="submit" name="action_type" value="rewrite_suggestion">改写</button>
+                    </div>
+                </form>
             </article>
             {% endfor %}
             {% else %}
             <div class="empty-state">
                 <strong>未命中风险</strong>
                 <p>这份合同暂未命中当前启用规则，但仍建议人工抽样复核。</p>
+            </div>
+            {% endif %}
+        </div>
+
+        <div class="review-history">
+            <div class="panel-head">
+                <h3>复核历史</h3>
+            </div>
+            {% if data.review_actions %}
+            <div class="trace-list">
+                {% for action in data.review_actions %}
+                <div class="trace-item">
+                    <span>{{ action.action_label }}</span>
+                    <strong>{{ action.target_id }}</strong>
+                    {% if action.comment %}
+                    <p>{{ action.comment }}</p>
+                    {% endif %}
+                    <small>{{ action.created_at }}</small>
+                </div>
+                {% endfor %}
+            </div>
+            {% else %}
+            <div class="empty-state compact-empty">
+                <strong>暂无复核动作</strong>
+                <p>处理任一风险后，这里会形成可审计记录。</p>
             </div>
             {% endif %}
         </div>
@@ -180,9 +225,24 @@
 <section class="panel report-panel">
     <div class="panel-head">
         <h3>报告快照</h3>
+        <span class="state-outline">v{{ data.report.version }}</span>
     </div>
     <p>{{ data.report.summary }}</p>
     <p class="risk-action">{{ data.report.recommendation }}</p>
+    <dl class="report-meta">
+        <div>
+            <dt>生成时间</dt>
+            <dd>{{ data.report.generated_at }}</dd>
+        </div>
+        <div>
+            <dt>文件 hash</dt>
+            <dd>{{ data.report.file_sha256 }}</dd>
+        </div>
+        <div>
+            <dt>文件路径</dt>
+            <dd>{{ data.report.file_path }}</dd>
+        </div>
+    </dl>
 </section>
 {% endif %}
 {% endblock %}

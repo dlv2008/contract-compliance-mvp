@@ -113,3 +113,30 @@ def review(task_id: str, request: Request) -> HTMLResponse:
             ),
         },
     )
+
+
+@router.post("/reviews/{task_id}/actions")
+def create_review_action(
+    task_id: str,
+    target_id: str = Form(...),
+    action_type: str = Form(...),
+    comment: str | None = Form(default=None),
+    revised_action: str | None = Form(default=None),
+) -> RedirectResponse:
+    revised_payload = {}
+    if action_type == "rewrite_suggestion" and revised_action:
+        revised_payload["action"] = revised_action
+    try:
+        TaskRepository().record_review_action(
+            task_id,
+            target_type="rule_hit",
+            target_id=target_id,
+            action_type=action_type,
+            comment=comment,
+            revised_payload=revised_payload,
+        )
+    except ContractUploadError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except TaskStorageError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return RedirectResponse(url=f"/reviews/{task_id}", status_code=303)

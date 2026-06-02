@@ -12,7 +12,18 @@ from app.config import Settings, get_settings
 from app.models import AgentTraceEvent, ReportSnapshot, ReviewActionRecord, TaskRecord
 from app.services.db_store import PostgresTaskStore
 from app.services.object_store import ObjectStorageError, ObjectStore
-from app.services.review_engine import analyze_contract
+from app.services.review_engine import (
+    DECISION_LABELS,
+    OVERALL_RISK_LABELS,
+    STATUS_LABELS,
+    analyze_contract,
+    build_report_snapshot,
+    build_summary,
+    build_workflow_steps,
+    derive_decision,
+    derive_overall_risk,
+    derive_status,
+)
 
 
 SUPPORTED_TEXT_EXTENSIONS = {".md", ".txt", ".text"}
@@ -219,6 +230,7 @@ class TaskRepository:
             created_at=now,
         )
         updated_task = self._apply_review_action(task, action)
+        updated_task = self._write_report_snapshot(updated_task)
         self._persist_task(updated_task, "recorded manual review action")
         return action
 
@@ -345,11 +357,37 @@ class TaskRepository:
                 payload=action.model_dump(),
             )
         )
-        return task.model_copy(
+        reviewed_task = task.model_copy(
             update={
                 "risks": updated_risks,
                 "review_actions": [*task.review_actions, action],
                 "agent_trace": trace,
+            }
+        )
+        return self._refresh_review_outcome(reviewed_task)
+
+    def _refresh_review_outcome(self, task: TaskRecord) -> TaskRecord:
+        active_risks = [risk for risk in task.risks if risk.review_status != "rejected"]
+        overall_risk = derive_overall_risk(active_risks)
+        status = derive_status(overall_risk, active_risks)
+        decision = derive_decision(overall_risk, active_risks)
+        workflow_steps = build_workflow_steps(datetime.now(timezone.utc).isoformat(timespec="seconds"), status)
+
+        previous_version = task.report_snapshot.version if task.report_snapshot else 0
+        report_snapshot = build_report_snapshot(task.name, active_risks, decision).model_copy(
+            update={"version": previous_version + 1}
+        )
+        return task.model_copy(
+            update={
+                "status": status,
+                "status_label": status_label(status),
+                "overall_risk": overall_risk,
+                "overall_risk_label": overall_risk_label(overall_risk),
+                "decision": decision,
+                "decision_label": decision_label(decision),
+                "summary": build_review_summary(active_risks),
+                "workflow_steps": workflow_steps,
+                "report_snapshot": report_snapshot,
             }
         )
 
@@ -434,3 +472,19 @@ def render_report_markdown(task: TaskRecord, snapshot: ReportSnapshot) -> str:
         )
     lines.append("")
     return "\n".join(lines)
+
+
+def status_label(status: str) -> str:
+    return STATUS_LABELS.get(status, status)
+
+
+def overall_risk_label(overall_risk: str) -> str:
+    return OVERALL_RISK_LABELS.get(overall_risk, overall_risk)
+
+
+def decision_label(decision: str) -> str:
+    return DECISION_LABELS.get(decision, decision)
+
+
+def build_review_summary(active_risks: list) -> str:
+    return build_summary(active_risks)
