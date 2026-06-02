@@ -31,6 +31,10 @@ STATUS_LABELS = {
     "watchlist": "需关注",
     "ready": "建议通过",
     "review_completed": "复核完成",
+    "final_approved": "复核通过",
+    "returned_for_materials": "退回补材料",
+    "revision_required": "要求整改",
+    "archived": "已归档",
 }
 DECISION_LABELS = {
     "manual_review": "人工复核",
@@ -38,6 +42,9 @@ DECISION_LABELS = {
     "pass": "建议通过",
     "revision_required": "建议整改",
     "conditional_pass": "附条件通过",
+    "final_approved": "复核通过",
+    "returned_for_materials": "退回补材料",
+    "archived": "归档完成",
 }
 FIELD_LABELS = {
     "contract_name": "合同名称",
@@ -201,6 +208,29 @@ def build_review_payload(
             "contract_type": task.contract_type_label,
             "state_class": overall_risk_to_state_class(task.overall_risk),
         },
+        "task_decision": build_task_decision_payload(task),
+        "task_decision_actions": [
+            {
+                "action_type": "approve",
+                "label": "提交通过",
+                "hint": "用于低风险或已取得例外审批的合同。",
+            },
+            {
+                "action_type": "return_materials",
+                "label": "退回补材料",
+                "hint": "业务侧需补充审批、说明或证明材料。",
+            },
+            {
+                "action_type": "require_revision",
+                "label": "要求整改",
+                "hint": "合同条款需修改后再提交复核。",
+            },
+            {
+                "action_type": "archive",
+                "label": "归档",
+                "hint": "审查结论和报告已确认，进入留档状态。",
+            },
+        ],
         "summary_cards": [
             {"label": "总风险数", "value": str(len(task.risks))},
             {"label": "高风险", "value": str(high_count)},
@@ -302,6 +332,22 @@ def build_task_summary(task: TaskRecord) -> dict[str, str]:
         "risk_tone": overall_risk_to_chip_tone(task.overall_risk),
         "summary": task.summary,
         "created_at": task.created_at[:19].replace("T", " "),
+    }
+
+
+def build_task_decision_payload(task: TaskRecord) -> dict[str, Any]:
+    task_actions = [
+        action
+        for action in task.review_actions
+        if action.target_type == "task" and action.target_id == task.id
+    ]
+    latest = sorted(task_actions, key=lambda item: item.created_at, reverse=True)[0] if task_actions else None
+    return {
+        "status": task.status_label,
+        "decision": task.decision_label,
+        "latest_action": render_review_action(latest.action_type) if latest else "尚未提交整单结论",
+        "latest_comment": latest.comment if latest else None,
+        "latest_at": latest.created_at if latest else None,
     }
 
 
@@ -972,6 +1018,10 @@ def render_review_action(action_type: str) -> str:
         "reject": "驳回命中",
         "rewrite_suggestion": "改写建议",
         "request_evidence": "要求补证据",
+        "approve": "提交通过",
+        "return_materials": "退回补材料",
+        "require_revision": "要求整改",
+        "archive": "归档",
     }
     return labels.get(action_type, action_type)
 
@@ -1047,6 +1097,12 @@ def build_report_snapshot(name: str, risks: list[RiskFinding], decision: str) ->
 def build_report_recommendation(risks: list[RiskFinding], decision: str) -> str:
     if not risks:
         return "建议完成人工抽样复核后进入签署或执行流程。"
+    if decision == "final_approved":
+        return "人工复核已提交通过；如仍存在风险提示，应在归档材料中保留例外审批或处理说明。"
+    if decision == "returned_for_materials":
+        return "任务已退回补充材料；建议业务侧补齐审批、证明或说明后重新提交审查。"
+    if decision == "archived":
+        return "审查任务已归档；当前报告可作为审计留痕和后续复盘依据。"
     if decision == "manual_review":
         return "建议审查人优先处理高风险项，补齐依据材料后再确认是否放行。"
     if decision == "revision_required":

@@ -121,6 +121,25 @@ def test_create_task_and_fetch_review_payload(client: TestClient) -> None:
     assert updated_detail["report"]["version"] == 2
     assert next(item for item in updated_detail["risks"] if item["rule"] == "FIN-PUR-003")["review_status_label"] == "待补证据"
 
+    task_decision_response = client.post(
+        f"/api/tasks/{task['id']}/task-decisions",
+        json={
+            "action_type": "return_materials",
+            "comment": "Business owner must provide approval evidence.",
+        },
+    )
+    assert task_decision_response.status_code == 201
+
+    finalized_detail_response = client.get(f"/api/tasks/{task['id']}")
+    finalized_detail = finalized_detail_response.json()["task"]
+    finalized_actions_response = client.get(f"/api/tasks/{task['id']}/review-actions")
+
+    assert finalized_detail["report"]["version"] == 3
+    assert finalized_detail["task_decision"]["latest_comment"] == "Business owner must provide approval evidence."
+    finalized_actions = finalized_actions_response.json()["items"]
+    assert any(item["target_type"] == "task" for item in finalized_actions)
+    assert any(item["action_type"] == "return_materials" for item in finalized_actions)
+
 
 def test_rejects_unsupported_upload_type(client: TestClient) -> None:
     response = client.post(
@@ -161,6 +180,7 @@ def test_dashboard_and_review_pages_render_created_task(client: TestClient) -> N
 
     review_response = client.get(review_url)
     assert review_response.status_code == 200
+    assert "/task-decision" in review_response.text
     assert "RAGFlow 状态" in review_response.text
     assert "模型服务" in review_response.text
     assert "高风险" in review_response.text

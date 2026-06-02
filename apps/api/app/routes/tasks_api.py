@@ -24,6 +24,12 @@ class ReviewActionRequest(BaseModel):
     revised_payload: dict = Field(default_factory=dict)
 
 
+class TaskDecisionRequest(BaseModel):
+    action_type: str
+    actor: str = "reviewer"
+    comment: str | None = None
+
+
 @router.get("/tasks")
 def list_tasks() -> dict:
     try:
@@ -116,6 +122,24 @@ def create_task_review_action(task_id: str, payload: ReviewActionRequest) -> JSO
             actor=payload.actor,
             comment=payload.comment,
             revised_payload=payload.revised_payload,
+        )
+    except ContractUploadError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except TaskStorageError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return JSONResponse(status_code=201, content={"action": action.model_dump()})
+
+
+@router.post("/tasks/{task_id}/task-decisions", status_code=201)
+def create_task_decision(task_id: str, payload: TaskDecisionRequest) -> JSONResponse:
+    repository = TaskRepository()
+    _ensure_task_exists(repository, task_id)
+    try:
+        action = repository.record_task_decision(
+            task_id,
+            action_type=payload.action_type,
+            actor=payload.actor,
+            comment=payload.comment,
         )
     except ContractUploadError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

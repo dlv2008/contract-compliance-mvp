@@ -34,6 +34,19 @@ REVIEW_STATUS_BY_ACTION = {
     "rewrite_suggestion": "revised",
     "request_evidence": "evidence_requested",
 }
+TASK_DECISION_ACTION_TYPES = {"approve", "return_materials", "require_revision", "archive"}
+TASK_STATUS_BY_DECISION_ACTION = {
+    "approve": "final_approved",
+    "return_materials": "returned_for_materials",
+    "require_revision": "revision_required",
+    "archive": "archived",
+}
+TASK_DECISION_BY_ACTION = {
+    "approve": "final_approved",
+    "return_materials": "returned_for_materials",
+    "require_revision": "revision_required",
+    "archive": "archived",
+}
 
 
 class ContractUploadError(ValueError):
@@ -217,7 +230,7 @@ class TaskRepository:
         if task is None:
             raise ContractUploadError("Task does not exist.")
 
-        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        now = datetime.now(timezone.utc).isoformat(timespec="microseconds")
         action = ReviewActionRecord(
             id=f"review-{uuid.uuid4().hex[:12]}",
             task_id=task_id,
@@ -232,6 +245,39 @@ class TaskRepository:
         updated_task = self._apply_review_action(task, action)
         updated_task = self._write_report_snapshot(updated_task)
         self._persist_task(updated_task, "recorded manual review action")
+        return action
+
+    def record_task_decision(
+        self,
+        task_id: str,
+        *,
+        action_type: str,
+        actor: str = "reviewer",
+        comment: str | None = None,
+    ) -> ReviewActionRecord:
+        if action_type not in TASK_DECISION_ACTION_TYPES:
+            supported = ", ".join(sorted(TASK_DECISION_ACTION_TYPES))
+            raise ContractUploadError(f"Unsupported task decision: {action_type}. Supported: {supported}.")
+
+        task = self.get_task(task_id)
+        if task is None:
+            raise ContractUploadError("Task does not exist.")
+
+        now = datetime.now(timezone.utc).isoformat(timespec="microseconds")
+        action = ReviewActionRecord(
+            id=f"review-{uuid.uuid4().hex[:12]}",
+            task_id=task_id,
+            target_type="task",
+            target_id=task_id,
+            action_type=action_type,
+            actor=actor or "reviewer",
+            comment=comment,
+            revised_payload={},
+            created_at=now,
+        )
+        updated_task = self._apply_task_decision(task, action)
+        updated_task = self._write_report_snapshot(updated_task)
+        self._persist_task(updated_task, "recorded task-level review decision")
         return action
 
     def _bootstrap_if_needed(self) -> None:
@@ -391,6 +437,38 @@ class TaskRepository:
             }
         )
 
+    def _apply_task_decision(self, task: TaskRecord, action: ReviewActionRecord) -> TaskRecord:
+        status = TASK_STATUS_BY_DECISION_ACTION[action.action_type]
+        decision = TASK_DECISION_BY_ACTION[action.action_type]
+        active_risks = [risk for risk in task.risks if risk.review_status != "rejected"]
+        previous_version = task.report_snapshot.version if task.report_snapshot else 0
+        report_snapshot = build_report_snapshot(task.name, active_risks, decision).model_copy(
+            update={"version": previous_version + 1}
+        )
+        workflow_steps = build_workflow_steps(action.created_at, status)
+        trace = list(task.agent_trace)
+        trace.append(
+            AgentTraceEvent(
+                at=action.created_at,
+                type="review.finalize",
+                message=f"Task-level review decision recorded: {action.action_type}",
+                payload=action.model_dump(),
+            )
+        )
+        return task.model_copy(
+            update={
+                "status": status,
+                "status_label": status_label(status),
+                "decision": decision,
+                "decision_label": decision_label(decision),
+                "summary": build_task_decision_summary(active_risks, action.action_type),
+                "review_actions": [*task.review_actions, action],
+                "workflow_steps": workflow_steps,
+                "agent_trace": trace,
+                "report_snapshot": report_snapshot,
+            }
+        )
+
     def _write_report_snapshot(self, task: TaskRecord) -> TaskRecord:
         if task.report_snapshot is None:
             return task
@@ -487,4 +565,16 @@ def decision_label(decision: str) -> str:
 
 
 def build_review_summary(active_risks: list) -> str:
+    return build_summary(active_risks)
+
+
+def build_task_decision_summary(active_risks: list, action_type: str) -> str:
+    if action_type == "approve":
+        return "整单复核已提交通过，当前风险与例外处理意见已进入报告快照。"
+    if action_type == "return_materials":
+        return "整单已退回补充材料，待业务侧补齐审批、证明或说明后重新审查。"
+    if action_type == "require_revision":
+        return "整单已要求整改，待合同条款修改后重新提交复核。"
+    if action_type == "archive":
+        return "整单已归档，审查结论、复核动作和报告快照已留痕。"
     return build_summary(active_risks)

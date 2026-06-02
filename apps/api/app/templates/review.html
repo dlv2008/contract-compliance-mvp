@@ -22,6 +22,40 @@
     {% endfor %}
 </section>
 
+<section class="panel task-decision-panel">
+    <div class="panel-head">
+        <div>
+            <h3>整单处理结论</h3>
+            <p class="panel-subtitle">风险复核用于处理单条命中，整单结论用于决定合同下一步流转。</p>
+        </div>
+        <span class="state-outline">{{ data.task_decision.latest_action }}</span>
+    </div>
+    <div class="task-decision-grid">
+        <div class="task-decision-current">
+            <span>当前状态</span>
+            <strong>{{ data.task_decision.status }}</strong>
+            <small>{{ data.task_decision.decision }}</small>
+            {% if data.task_decision.latest_comment %}
+            <p>{{ data.task_decision.latest_comment }}</p>
+            {% endif %}
+            {% if data.task_decision.latest_at %}
+            <em>{{ data.task_decision.latest_at }}</em>
+            {% endif %}
+        </div>
+        <form class="task-decision-form" action="/reviews/{{ data.task.id }}/task-decision" method="post">
+            <textarea name="comment" rows="3" placeholder="整单复核结论说明"></textarea>
+            <div class="task-decision-actions">
+                {% for action in data.task_decision_actions %}
+                <button type="submit" name="action_type" value="{{ action.action_type }}" title="{{ action.hint }}">
+                    <strong>{{ action.label }}</strong>
+                    <span>{{ action.hint }}</span>
+                </button>
+                {% endfor %}
+            </div>
+        </form>
+    </div>
+</section>
+
 <section class="workspace-grid">
     <aside class="panel left-rail">
         <div class="panel-head">

@@ -427,6 +427,106 @@ a {
     gap: 18px;
 }
 
+.task-decision-panel {
+    margin-bottom: 24px;
+}
+
+.task-decision-grid {
+    display: grid;
+    grid-template-columns: minmax(220px, 0.36fr) minmax(0, 1fr);
+    gap: 18px;
+}
+
+.task-decision-current {
+    min-width: 0;
+    padding: 16px 18px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    background: rgba(255, 255, 255, 0.68);
+}
+
+.task-decision-current span,
+.task-decision-current small,
+.task-decision-current em {
+    display: block;
+    color: var(--muted);
+}
+
+.task-decision-current strong {
+    display: block;
+    margin: 8px 0 4px;
+    font-size: 26px;
+    font-family: var(--font-display);
+}
+
+.task-decision-current p {
+    margin: 12px 0 0;
+    overflow-wrap: anywhere;
+}
+
+.task-decision-current em {
+    margin-top: 10px;
+    font-style: normal;
+    font-size: 12px;
+}
+
+.task-decision-form {
+    display: grid;
+    gap: 12px;
+}
+
+.task-decision-form textarea {
+    width: 100%;
+    min-width: 0;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 12px 14px;
+    background: rgba(255, 255, 255, 0.78);
+    color: var(--text);
+    font: inherit;
+}
+
+.task-decision-form textarea:focus {
+    outline: 2px solid rgba(51, 92, 103, 0.24);
+    outline-offset: 1px;
+}
+
+.task-decision-actions {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 10px;
+}
+
+.task-decision-actions button {
+    min-width: 0;
+    min-height: 86px;
+    border: 1px solid rgba(24, 33, 38, 0.14);
+    border-radius: var(--radius);
+    background: #ffffff;
+    color: var(--text);
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+    padding: 12px 14px;
+}
+
+.task-decision-actions button:hover {
+    border-color: rgba(36, 118, 93, 0.34);
+    background: rgba(36, 118, 93, 0.06);
+}
+
+.task-decision-actions strong,
+.task-decision-actions span {
+    display: block;
+}
+
+.task-decision-actions span {
+    margin-top: 6px;
+    color: var(--muted);
+    font-size: 12px;
+    line-height: 1.45;
+}
+
 .clause-list,
 .risk-stack,
 .field-block {
@@ -944,9 +1044,14 @@ a {
     .trace-grid,
     .dashboard-grid,
     .report-meta,
+    .task-decision-grid,
     .hero,
     .review-header {
         grid-template-columns: 1fr;
+    }
+
+    .task-decision-actions {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
     }
 }
 
@@ -975,7 +1080,8 @@ a {
     }
 
     .review-button-row,
-    .rewrite-row {
+    .rewrite-row,
+    .task-decision-actions {
         grid-template-columns: 1fr;
     }
 

@@ -140,3 +140,22 @@ def create_review_action(
     except TaskStorageError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     return RedirectResponse(url=f"/reviews/{task_id}", status_code=303)
+
+
+@router.post("/reviews/{task_id}/task-decision")
+def create_task_decision(
+    task_id: str,
+    action_type: str = Form(...),
+    comment: str | None = Form(default=None),
+) -> RedirectResponse:
+    try:
+        TaskRepository().record_task_decision(
+            task_id,
+            action_type=action_type,
+            comment=comment,
+        )
+    except ContractUploadError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except TaskStorageError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return RedirectResponse(url=f"/reviews/{task_id}", status_code=303)
