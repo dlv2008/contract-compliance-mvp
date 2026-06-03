@@ -1,0 +1,132 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="page-title">
+    <div>
+        <p class="eyebrow">Policy To Rules</p>
+        <h2>规则草稿审核</h2>
+        <p>从制度或经验文档生成配置资产草稿。草稿不会自动影响合同审查，必须经过审核、发布、绑定配置集并发布配置集版本后才会生效。</p>
+    </div>
+</section>
+
+{% if data.error %}
+<section class="notice notice-danger">{{ data.error }}</section>
+{% endif %}
+
+<section class="asset-layout">
+    <article class="panel">
+        <div class="panel-head">
+            <div>
+                <h3>导入制度文档</h3>
+                <p class="panel-subtitle">当前实现使用可控草稿生成器模拟 LLM 结构化输出，便于本地稳定演示。</p>
+            </div>
+        </div>
+        <form class="upload-form" action="/rule-drafts/generate" method="post">
+            <label class="form-row">
+                <span>适用合同类型</span>
+                <select class="input" name="contract_type">
+                    <option value="procurement_contract">采购合同</option>
+                    <option value="service_contract">服务合同</option>
+                    <option value="unknown_contract">通用合同</option>
+                </select>
+            </label>
+            <label class="form-row">
+                <span>制度/经验文档内容</span>
+                <textarea class="input textarea" name="source_text" rows="8" required>采购合同预付款原则上不得超过合同总价 25%，超过时需要补充采购和财务例外审批。</textarea>
+            </label>
+            <div class="checkbox-row">
+                <label><input type="checkbox" name="include_semantic_rule" value="true" /> 同时生成语义规则草稿</label>
+                <label><input type="checkbox" name="include_message_template" value="true" /> 同时生成风险提示模板草稿</label>
+            </div>
+            <button class="button-primary" type="submit">生成草稿</button>
+        </form>
+    </article>
+
+    <aside class="panel">
+        <div class="panel-head">
+            <h3>生效路径</h3>
+        </div>
+        <ol class="ordered-list">
+            <li>生成 draft 草稿</li>
+            <li>审核通过为 approved</li>
+            <li>发布为 active 资产</li>
+            <li>复制配置集为新版草稿</li>
+            <li>绑定 active 资产</li>
+            <li>发布配置集新版</li>
+            <li>上传合同时选择新版配置集</li>
+        </ol>
+    </aside>
+</section>
+
+<section class="panel">
+    <div class="panel-head">
+        <div>
+            <h3>待审核草稿</h3>
+            <p class="panel-subtitle">这里的资产仍不能被配置集引用。</p>
+        </div>
+        <a class="button-secondary" href="/assets?status=draft">在资产工作台查看</a>
+    </div>
+    <div class="asset-list">
+        {% for asset in data.drafts %}
+        <article class="asset-card">
+            <div class="asset-card-main">
+                <div class="asset-card-title">
+                    <span class="asset-type">{{ asset.asset_type }}</span>
+                    <strong>{{ asset.name }}</strong>
+                    <span class="status-badge status-draft">draft</span>
+                </div>
+                <p>{{ asset.description }}</p>
+                <dl class="compact-dl">
+                    <div><dt>适用性</dt><dd>{{ asset.applicability }}</dd></div>
+                    <div><dt>内容</dt><dd>{{ asset.content }}</dd></div>
+                </dl>
+            </div>
+            <div class="asset-actions">
+                <form action="/assets/{{ asset.id }}/approve" method="post">
+                    <input class="input" type="text" name="comment" placeholder="审核意见" />
+                    <button class="button-primary" type="submit">审核通过</button>
+                </form>
+                <form action="/assets/{{ asset.id }}/reject" method="post">
+                    <input class="input" type="text" name="comment" placeholder="驳回原因" />
+                    <button class="button-ghost" type="submit">驳回</button>
+                </form>
+            </div>
+        </article>
+        {% else %}
+        <div class="empty-state">
+            <strong>没有待审核草稿</strong>
+            <p>可以从上方制度文本生成一个草稿。</p>
+        </div>
+        {% endfor %}
+    </div>
+</section>
+
+<section class="panel">
+    <div class="panel-head">
+        <div>
+            <h3>已审核待发布</h3>
+            <p class="panel-subtitle">approved 资产还不能被合同审查使用，发布后才可绑定配置集。</p>
+        </div>
+    </div>
+    <div class="asset-list">
+        {% for asset in data.approved %}
+        <article class="asset-card">
+            <div class="asset-card-main">
+                <div class="asset-card-title">
+                    <span class="asset-type">{{ asset.asset_type }}</span>
+                    <strong>{{ asset.name }}</strong>
+                    <span class="status-badge status-approved">approved</span>
+                </div>
+                <p>{{ asset.description }}</p>
+            </div>
+            <form action="/assets/{{ asset.id }}/publish" method="post">
+                <button class="button-primary" type="submit">发布为 active</button>
+            </form>
+        </article>
+        {% else %}
+        <div class="empty-state">
+            <strong>没有已审核待发布资产</strong>
+        </div>
+        {% endfor %}
+    </div>
+</section>
+{% endblock %}

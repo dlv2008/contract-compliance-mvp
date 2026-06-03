@@ -118,13 +118,14 @@ def analyze_contract(
     contract_name: str | None,
     contract_text: str,
     created_at: str | None = None,
+    rule_context: dict[str, Any] | None = None,
 ) -> TaskRecord:
     normalized_text = contract_text.replace("\r\n", "\n").strip()
     resolved_name = (contract_name or extract_contract_name(normalized_text) or Path(source_filename).stem).strip()
     clauses = parse_clauses(normalized_text)
     contract_type = detect_contract_type(resolved_name, normalized_text)
     facts = extract_facts(resolved_name, contract_type, clauses, normalized_text)
-    risks = evaluate_rules(contract_type, facts)
+    risks = evaluate_rules(contract_type, facts, rule_context=rule_context)
     clauses = apply_clause_status(clauses, risks)
     extracted_fields = build_extracted_fields(contract_type, facts)
     overall_risk = derive_overall_risk(risks)
@@ -658,8 +659,12 @@ def extract_facts(
 def evaluate_rules(
     contract_type: str,
     facts: dict[str, dict[str, Any]],
+    rule_context: dict[str, Any] | None = None,
 ) -> list[RiskFinding]:
     risks: list[RiskFinding] = []
+    rule_context = rule_context or {}
+    prepay_threshold = float(rule_context.get("prepay_threshold") or 30)
+    prepay_threshold_asset_id = str(rule_context.get("prepay_threshold_asset_id") or "asset-hardrule-prepay-v1")
 
     invoice_type = fact_value(facts, "invoice.type")
     tax_rate = fact_value(facts, "invoice.tax_rate")
@@ -701,7 +706,7 @@ def evaluate_rules(
             )
         )
 
-    if prepay_ratio is not None and prepay_ratio > 30:
+    if prepay_ratio is not None and prepay_ratio > prepay_threshold:
         if contract_type == "procurement_contract":
             risks.append(
                 build_risk(
@@ -831,7 +836,24 @@ def evaluate_rules(
         )
 
     risks.sort(key=lambda item: risk_priority(item.level), reverse=True)
-    return risks
+    prepay_rule_ids = {"FIN-PUR-003", "FIN-SVC-003", "FIN-SVC-004"}
+    annotated_risks = []
+    for risk in risks:
+        if risk.rule_id in prepay_rule_ids:
+            threshold_text = trim_number(str(prepay_threshold))
+            annotated_risks.append(
+                risk.model_copy(
+                    update={
+                        "reason": (
+                            f"{risk.reason} 配置来源：{prepay_threshold_asset_id}，"
+                            f"当前阈值 {threshold_text}%."
+                        )
+                    }
+                )
+            )
+        else:
+            annotated_risks.append(risk)
+    return annotated_risks
 
 
 def build_risk(

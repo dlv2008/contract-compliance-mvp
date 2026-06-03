@@ -190,6 +190,18 @@
         <div class="panel-spacer"></div>
 
         <div class="panel-head">
+            <h3>审查配置</h3>
+            <a class="button-secondary" href="/assets">管理</a>
+        </div>
+        <div class="config-summary">
+            <span>Active 配置集 <strong>{{ data.asset_summary.active_profiles }}</strong></span>
+            <span>Active 资产 <strong>{{ data.asset_summary.active_assets }}</strong></span>
+            <span>草稿 <strong>{{ data.asset_summary.draft_assets }}</strong></span>
+        </div>
+
+        <div class="panel-spacer"></div>
+
+        <div class="panel-head">
             <h3>处理链路</h3>
         </div>
         <ol class="ordered-list">

@@ -1,0 +1,155 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="page-title">
+    <div>
+        <p class="eyebrow">Review Configuration</p>
+        <h2>审查配置资产</h2>
+        <p>维护条款解析、字段 Schema、硬规则、语义规则、风险策略、提示模板和报告模板。资产发布后，还需要绑定到配置集版本，才会进入合同审查。</p>
+    </div>
+    <div class="summary-strip">
+        <span>Active 配置集 <strong>{{ data.summary.active_profiles }}</strong></span>
+        <span>Active 资产 <strong>{{ data.summary.active_assets }}</strong></span>
+        <span>草稿 <strong>{{ data.summary.draft_assets }}</strong></span>
+        <span>待发布 <strong>{{ data.summary.approved_assets }}</strong></span>
+    </div>
+</section>
+
+{% if data.error %}
+<section class="notice notice-danger">{{ data.error }}</section>
+{% endif %}
+
+<section class="asset-layout">
+    <article class="panel">
+        <div class="panel-head">
+            <div>
+                <h3>资产列表</h3>
+                <p class="panel-subtitle">草稿需要审核和发布；active 资产可以绑定到配置集。</p>
+            </div>
+            <a class="button-secondary" href="/rule-drafts">生成规则草稿</a>
+        </div>
+
+        <form class="filter-bar" action="/assets" method="get">
+            <select class="input" name="asset_type">
+                <option value="">全部类型</option>
+                {% for item in data.asset_types %}
+                <option value="{{ item }}" {% if data.selected_asset_type == item %}selected{% endif %}>{{ item }}</option>
+                {% endfor %}
+            </select>
+            <select class="input" name="status">
+                <option value="">全部状态</option>
+                {% for item in ["draft", "approved", "active", "retired", "rejected"] %}
+                <option value="{{ item }}" {% if data.selected_status == item %}selected{% endif %}>{{ item }}</option>
+                {% endfor %}
+            </select>
+            <input class="input" type="search" name="q" value="{{ data.query }}" placeholder="搜索名称或 ID" />
+            <button class="button-primary" type="submit">筛选</button>
+        </form>
+
+        <div class="asset-list">
+            {% for asset in data.assets %}
+            <article class="asset-card">
+                <div class="asset-card-main">
+                    <div class="asset-card-title">
+                        <span class="asset-type">{{ asset.asset_type }}</span>
+                        <strong>{{ asset.name }}</strong>
+                        <span class="pill">v{{ asset.version }}</span>
+                        <span class="status-badge status-{{ asset.status }}">{{ asset.status }}</span>
+                    </div>
+                    <p>{{ asset.description or "未填写说明。" }}</p>
+                    <dl class="compact-dl">
+                        <div><dt>ID</dt><dd>{{ asset.id }}</dd></div>
+                        <div><dt>适用性</dt><dd>{{ asset.applicability }}</dd></div>
+                        <div><dt>内容</dt><dd>{{ asset.content }}</dd></div>
+                    </dl>
+                </div>
+                <div class="asset-actions">
+                    {% if asset.status == "draft" %}
+                    <form action="/assets/{{ asset.id }}/approve" method="post">
+                        <input class="input" type="text" name="comment" placeholder="审核意见" />
+                        <button class="button-primary" type="submit">审核通过</button>
+                    </form>
+                    <form action="/assets/{{ asset.id }}/reject" method="post">
+                        <input class="input" type="text" name="comment" placeholder="驳回原因" />
+                        <button class="button-ghost" type="submit">驳回</button>
+                    </form>
+                    {% elif asset.status == "approved" %}
+                    <form action="/assets/{{ asset.id }}/publish" method="post">
+                        <button class="button-primary" type="submit">发布为 active</button>
+                    </form>
+                    {% elif asset.status == "active" %}
+                    <span class="panel-note">可绑定到配置集草稿版本</span>
+                    {% else %}
+                    <span class="panel-note">仅用于历史追溯</span>
+                    {% endif %}
+                </div>
+            </article>
+            {% else %}
+            <div class="empty-state">
+                <strong>没有符合筛选条件的资产</strong>
+                <p>可以清空筛选条件，或从右侧创建一个草稿资产。</p>
+            </div>
+            {% endfor %}
+        </div>
+    </article>
+
+    <aside class="panel">
+        <div class="panel-head">
+            <h3>新建资产草稿</h3>
+        </div>
+        <form class="upload-form" action="/assets/create" method="post">
+            <label class="form-row">
+                <span>资产类型</span>
+                <select class="input" name="asset_type" required>
+                    {% for item in data.asset_types %}
+                    <option value="{{ item }}">{{ item }}</option>
+                    {% endfor %}
+                </select>
+            </label>
+            <label class="form-row">
+                <span>名称</span>
+                <input class="input" name="name" required placeholder="例如：采购预付款比例控制 v2" />
+            </label>
+            <label class="form-row">
+                <span>说明</span>
+                <textarea class="input textarea" name="description" rows="3"></textarea>
+            </label>
+            <label class="form-row">
+                <span>适用合同类型</span>
+                <select class="input" name="contract_type">
+                    <option value="">通用</option>
+                    <option value="procurement_contract">采购合同</option>
+                    <option value="service_contract">服务合同</option>
+                </select>
+            </label>
+            <div class="form-grid-3">
+                <label class="form-row">
+                    <span>字段</span>
+                    <input class="input" name="fact_key" placeholder="payment.prepay_ratio" />
+                </label>
+                <label class="form-row">
+                    <span>操作符</span>
+                    <input class="input" name="operator" placeholder=">" />
+                </label>
+                <label class="form-row">
+                    <span>值</span>
+                    <input class="input" name="value" placeholder="30" />
+                </label>
+            </div>
+            <button class="button-primary" type="submit">保存为草稿</button>
+        </form>
+
+        <div class="panel-spacer"></div>
+        <div class="panel-head">
+            <h3>配置集</h3>
+        </div>
+        <div class="profile-link-list">
+            {% for profile in data.profiles %}
+            <a class="profile-link" href="/review-profiles/{{ profile.id }}">
+                <strong>{{ profile.name }} v{{ profile.version }}</strong>
+                <span>{{ profile.status }} · {{ profile.assets | length }} 个资产</span>
+            </a>
+            {% endfor %}
+        </div>
+    </aside>
+</section>
+{% endblock %}

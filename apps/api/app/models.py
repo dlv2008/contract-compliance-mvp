@@ -137,6 +137,15 @@ class ConfigAsset(BaseModel):
     content: dict = Field(default_factory=dict)
     schema_version: str = "asset-v1"
     description: str | None = None
+    parent_asset_id: str | None = None
+    created_by: str = "system"
+    approved_by: str | None = None
+    approval_comment: str | None = None
+    rejection_comment: str | None = None
+    effective_from: str | None = None
+    effective_to: str | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
 
 
 class ReviewProfileAssetRef(BaseModel):
@@ -144,6 +153,7 @@ class ReviewProfileAssetRef(BaseModel):
     asset_type: str
     asset_version: int = 1
     required: bool = True
+    binding_reason: str | None = None
 
 
 class ReviewProfile(BaseModel):
@@ -154,6 +164,12 @@ class ReviewProfile(BaseModel):
     applicability: dict = Field(default_factory=dict)
     description: str | None = None
     assets: list[ReviewProfileAssetRef] = Field(default_factory=list)
+    parent_profile_id: str | None = None
+    created_by: str = "system"
+    published_by: str | None = None
+    publish_comment: str | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
 
 
 class TaskRecord(BaseModel):

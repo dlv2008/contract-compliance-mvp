@@ -114,6 +114,7 @@ class TaskRepository:
             source_filename=source_filename,
             contract_name=contract_name,
             contract_text=contract_text,
+            rule_context=AssetRegistry(self.settings).rule_context_for_profile(selected_profile),
         )
         task = self._apply_profile_snapshot(task, selected_profile).model_copy(update={"stored_file": stored_file})
         task = self._write_report_snapshot(task)

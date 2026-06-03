@@ -63,6 +63,98 @@ def test_review_profiles_and_assets_are_seeded(client: TestClient) -> None:
     assert any(item["asset_type"] == "report_template" for item in assets)
 
 
+def test_asset_management_closes_profile_usage_loop(client: TestClient) -> None:
+    draft_response = client.post(
+        "/api/rule-drafts/generate",
+        json={
+            "source_text": "采购合同预付款原则上不得超过合同总价 60%，超过时需要补充例外审批。",
+            "profile_hint": {"contract_type": "procurement_contract"},
+            "draft_types": ["hard_rule"],
+        },
+    )
+    assert draft_response.status_code == 201
+    draft_asset = draft_response.json()["drafts"][0]
+    assert draft_asset["status"] == "draft"
+    assert draft_asset["content"]["value"] == 60
+
+    approve_response = client.post(
+        f"/api/assets/{draft_asset['id']}/approve",
+        json={"comment": "policy checked"},
+    )
+    assert approve_response.status_code == 200
+    assert approve_response.json()["asset"]["status"] == "approved"
+
+    publish_response = client.post(f"/api/assets/{draft_asset['id']}/publish", json={})
+    assert publish_response.status_code == 200
+    active_asset = publish_response.json()["asset"]
+    assert active_asset["status"] == "active"
+
+    clone_response = client.post(
+        "/api/review-profiles/profile-procurement-basic-v1/versions",
+        json={"name": "Procurement threshold 60"},
+    )
+    assert clone_response.status_code == 201
+    draft_profile = clone_response.json()["profile"]
+    assert draft_profile["status"] == "draft"
+
+    bind_response = client.post(
+        f"/api/review-profiles/{draft_profile['id']}/assets",
+        json={"asset_id": active_asset["id"], "binding_reason": "threshold policy update"},
+    )
+    assert bind_response.status_code == 200
+    assert bind_response.json()["asset_counts"]["hard_rule"] == 2
+
+    profile_publish_response = client.post(
+        f"/api/review-profiles/{draft_profile['id']}/publish",
+        json={"comment": "ready for upload"},
+    )
+    assert profile_publish_response.status_code == 200
+    active_profile = profile_publish_response.json()["profile"]
+    assert active_profile["status"] == "active"
+
+    contract_text = """
+# 办公电脑采购合同
+
+【A001】合同双方
+甲方：星河科技有限公司
+乙方：上海云桥科技有限公司
+
+【A002】合同金额
+合同总价为人民币 100000 元。
+
+【A003】付款方式
+甲方支付合同总价 50% 作为预付款，剩余 50% 在到货验收后支付。
+
+【A004】发票
+乙方应开具增值税专用发票，税率 13%。
+
+【A005】验收
+货物到货后由甲方验收确认。
+
+【A006】收款账户
+账户名称：上海云桥科技有限公司第三方账户
+""".strip()
+    create_response = client.post(
+        "/api/tasks",
+        data={
+            "contract_name": "threshold usage check",
+            "selected_profile_id": active_profile["id"],
+        },
+        files={"file": ("contract.md", contract_text.encode("utf-8"), "text/markdown")},
+    )
+    assert create_response.status_code == 201
+    task_id = create_response.json()["task"]["id"]
+    detail_response = client.get(f"/api/tasks/{task_id}")
+    assert detail_response.status_code == 200
+    detail = detail_response.json()["task"]
+    rule_ids = {item["rule"] for item in detail["risks"]}
+    snapshot_asset_ids = {item["asset_id"] for item in detail["profile"]["assets"]}
+
+    assert active_asset["id"] in snapshot_asset_ids
+    assert "FIN-PUR-003" not in rule_ids
+    assert "FIN-PUR-005" in rule_ids
+
+
 def test_create_task_and_fetch_review_payload(client: TestClient) -> None:
     sample_path = sample_contract("采购合同-样本B-收款账户不一致风险版.md")
     payload = sample_path.read_bytes()
@@ -261,6 +353,19 @@ def test_dashboard_shows_manual_llm_probe_panel(client: TestClient) -> None:
     assert response.status_code == 200
     assert "大模型可用性检查" in response.text
     assert "主动检测模型" in response.text
+
+
+def test_asset_workbench_pages_render(client: TestClient) -> None:
+    assets_response = client.get("/assets")
+    drafts_response = client.get("/rule-drafts")
+    profile_response = client.get("/review-profiles/profile-procurement-basic-v1")
+
+    assert assets_response.status_code == 200
+    assert drafts_response.status_code == 200
+    assert profile_response.status_code == 200
+    assert "/rule-drafts" in assets_response.text
+    assert "/assets" in drafts_response.text
+    assert "profile-procurement-basic-v1" in profile_response.text
 
 
 def test_manual_llm_check_returns_probe_result(

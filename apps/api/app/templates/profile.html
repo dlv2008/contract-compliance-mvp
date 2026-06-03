@@ -1,0 +1,113 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="page-title">
+    <div>
+        <p class="eyebrow">Review Profile</p>
+        <h2>{{ data.profile.name }} v{{ data.profile.version }}</h2>
+        <p>{{ data.profile.description or "未填写配置集说明。" }}</p>
+    </div>
+    <div class="summary-strip">
+        <span>状态 <strong>{{ data.profile.status }}</strong></span>
+        <span>资产 <strong>{{ data.asset_refs | length }}</strong></span>
+        <span>硬规则 <strong>{{ data.asset_counts.hard_rule or 0 }}</strong></span>
+        <span>语义规则 <strong>{{ data.asset_counts.semantic_rule or 0 }}</strong></span>
+    </div>
+</section>
+
+{% if data.error %}
+<section class="notice notice-danger">{{ data.error }}</section>
+{% endif %}
+
+<section class="asset-layout">
+    <article class="panel">
+        <div class="panel-head">
+            <div>
+                <h3>配置集引用资产</h3>
+                <p class="panel-subtitle">上传合同时选择 active 配置集，系统会冻结这里列出的资产版本。</p>
+            </div>
+            <a class="button-secondary" href="/assets">返回资产工作台</a>
+        </div>
+        <div class="asset-list">
+            {% for item in data.asset_refs %}
+            {% set asset = item.asset %}
+            {% set ref = item.ref %}
+            <article class="asset-card">
+                <div class="asset-card-main">
+                    <div class="asset-card-title">
+                        <span class="asset-type">{{ asset.asset_type }}</span>
+                        <strong>{{ asset.name }}</strong>
+                        <span class="pill">v{{ ref.asset_version }}</span>
+                        <span class="status-badge status-{{ asset.status }}">{{ asset.status }}</span>
+                    </div>
+                    <p>{{ asset.description }}</p>
+                    <dl class="compact-dl">
+                        <div><dt>资产 ID</dt><dd>{{ asset.id }}</dd></div>
+                        <div><dt>绑定说明</dt><dd>{{ ref.binding_reason or "未填写。" }}</dd></div>
+                        <div><dt>内容</dt><dd>{{ asset.content }}</dd></div>
+                    </dl>
+                </div>
+            </article>
+            {% else %}
+            <div class="empty-state">
+                <strong>配置集还没有绑定资产</strong>
+            </div>
+            {% endfor %}
+        </div>
+    </article>
+
+    <aside class="panel">
+        <div class="panel-head">
+            <h3>配置集动作</h3>
+        </div>
+        {% if data.profile.status == "active" %}
+        <form class="upload-form" action="/review-profiles/{{ data.profile.id }}/versions" method="post">
+            <label class="form-row">
+                <span>新版名称</span>
+                <input class="input" name="name" value="{{ data.profile.name }} v{{ data.profile.version + 1 }}" />
+            </label>
+            <label class="form-row">
+                <span>说明</span>
+                <textarea class="input textarea" name="description" rows="3">{{ data.profile.description }}</textarea>
+            </label>
+            <button class="button-primary" type="submit">复制为草稿新版</button>
+        </form>
+        {% else %}
+        <p class="panel-subtitle">草稿配置集可以绑定 active 资产，发布后才能在上传合同时选择。</p>
+        <form class="upload-form" action="/review-profiles/{{ data.profile.id }}/assets" method="post">
+            <label class="form-row">
+                <span>选择 active 资产</span>
+                <select class="input" name="asset_id" required>
+                    {% for asset in data.active_assets %}
+                    <option value="{{ asset.id }}">{{ asset.asset_type }} · {{ asset.name }} v{{ asset.version }}</option>
+                    {% endfor %}
+                </select>
+            </label>
+            <label class="form-row">
+                <span>绑定说明</span>
+                <input class="input" name="binding_reason" placeholder="例如：采购付款制度 2026 版更新" />
+            </label>
+            <button class="button-primary" type="submit">绑定资产</button>
+        </form>
+        <div class="panel-spacer"></div>
+        <form class="upload-form" action="/review-profiles/{{ data.profile.id }}/publish" method="post">
+            <label class="form-row">
+                <span>发布说明</span>
+                <textarea class="input textarea" name="comment" rows="3" placeholder="确认必需资产完整，样本测试通过。"></textarea>
+            </label>
+            <button class="button-primary" type="submit">发布配置集版本</button>
+        </form>
+        {% endif %}
+
+        <div class="panel-spacer"></div>
+        <div class="panel-head">
+            <h3>操作提示</h3>
+        </div>
+        <ol class="ordered-list">
+            <li>active 配置集不可直接修改。</li>
+            <li>复制为 draft 新版后绑定资产。</li>
+            <li>发布 draft 配置集后，上传合同下拉框会出现新版。</li>
+            <li>历史任务使用自己的配置快照，不受新版影响。</li>
+        </ol>
+    </aside>
+</section>
+{% endblock %}
