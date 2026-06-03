@@ -127,6 +127,35 @@ class ReportSnapshot(BaseModel):
     file_sha256: str | None = None
 
 
+class ConfigAsset(BaseModel):
+    id: str
+    asset_type: str
+    name: str
+    version: int = 1
+    status: str = "active"
+    applicability: dict = Field(default_factory=dict)
+    content: dict = Field(default_factory=dict)
+    schema_version: str = "asset-v1"
+    description: str | None = None
+
+
+class ReviewProfileAssetRef(BaseModel):
+    asset_id: str
+    asset_type: str
+    asset_version: int = 1
+    required: bool = True
+
+
+class ReviewProfile(BaseModel):
+    id: str
+    name: str
+    version: int = 1
+    status: str = "active"
+    applicability: dict = Field(default_factory=dict)
+    description: str | None = None
+    assets: list[ReviewProfileAssetRef] = Field(default_factory=list)
+
+
 class TaskRecord(BaseModel):
     id: str
     name: str
@@ -142,6 +171,9 @@ class TaskRecord(BaseModel):
     summary: str
     created_at: str
     contract_text: str
+    selected_profile_id: str | None = None
+    selected_profile_name: str | None = None
+    selected_profile_snapshot: dict = Field(default_factory=dict)
     stored_file: StoredFile | None = None
     clauses: list[Clause] = Field(default_factory=list)
     extracted_fields: list[ExtractedField] = Field(default_factory=list)

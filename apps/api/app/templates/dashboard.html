@@ -144,6 +144,7 @@
                         <span class="task-time">{{ task.created_at }}</span>
                     </div>
                     <p>{{ task.summary }}</p>
+                    <p class="endpoint">配置集：{{ task.selected_profile_name }}</p>
                 </div>
                 <div class="task-meta">
                     <span class="pill">{{ task.status }}</span>
@@ -165,6 +166,15 @@
             <h3>新建审查任务</h3>
         </div>
         <form class="upload-form" action="/tasks/create" method="post" enctype="multipart/form-data">
+            <label class="form-row">
+                <span>审查配置集</span>
+                <select class="input" name="selected_profile_id" required>
+                    <option value="">请选择配置集</option>
+                    {% for profile in data.review_profiles %}
+                    <option value="{{ profile.id }}">{{ profile.name }} v{{ profile.version }}</option>
+                    {% endfor %}
+                </select>
+            </label>
             <label class="form-row">
                 <span>任务名称</span>
                 <input class="input" type="text" name="contract_name" placeholder="留空则使用文件标题或文件名" />

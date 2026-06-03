@@ -208,7 +208,10 @@ def build_review_payload(
             "decision": task.decision_label,
             "contract_type": task.contract_type_label,
             "state_class": overall_risk_to_state_class(task.overall_risk),
+            "selected_profile_id": task.selected_profile_id,
+            "selected_profile_name": task.selected_profile_name or "基础通用合同审查",
         },
+        "profile": build_profile_payload(task),
         "task_decision": build_task_decision_payload(task),
         "task_decision_actions": [
             {
@@ -356,6 +359,23 @@ def build_task_summary(task: TaskRecord) -> dict[str, str]:
         "risk_tone": overall_risk_to_chip_tone(task.overall_risk),
         "summary": task.summary,
         "created_at": task.created_at[:19].replace("T", " "),
+        "selected_profile_id": task.selected_profile_id or "",
+        "selected_profile_name": task.selected_profile_name or "基础通用合同审查",
+    }
+
+
+def build_profile_payload(task: TaskRecord) -> dict[str, Any]:
+    snapshot = task.selected_profile_snapshot or {}
+    assets = snapshot.get("assets", []) if isinstance(snapshot, dict) else []
+    return {
+        "id": task.selected_profile_id,
+        "name": task.selected_profile_name or snapshot.get("profile_name") or "基础通用合同审查",
+        "version": snapshot.get("profile_version") if isinstance(snapshot, dict) else None,
+        "assets": assets,
+        "asset_count": len(assets),
+        "hard_rule_count": sum(1 for item in assets if item.get("asset_type") == "hard_rule"),
+        "semantic_rule_count": sum(1 for item in assets if item.get("asset_type") == "semantic_rule"),
+        "report_template_count": sum(1 for item in assets if item.get("asset_type") == "report_template"),
     }
 
 

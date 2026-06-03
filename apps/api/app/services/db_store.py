@@ -24,6 +24,65 @@ CREATE INDEX IF NOT EXISTS idx_review_task_created_at ON review_task (created_at
 CREATE INDEX IF NOT EXISTS idx_review_task_status ON review_task (status);
 CREATE INDEX IF NOT EXISTS idx_review_task_risk ON review_task (overall_risk);
 
+CREATE TABLE IF NOT EXISTS config_asset (
+    id TEXT PRIMARY KEY,
+    asset_type TEXT NOT NULL,
+    name TEXT NOT NULL,
+    version INTEGER NOT NULL DEFAULT 1,
+    status TEXT NOT NULL DEFAULT 'draft',
+    applicability JSONB NOT NULL DEFAULT '{}'::jsonb,
+    content JSONB NOT NULL DEFAULT '{}'::jsonb,
+    schema_version TEXT NOT NULL DEFAULT 'asset-v1',
+    created_by TEXT NOT NULL DEFAULT 'system',
+    approved_by TEXT,
+    effective_from TIMESTAMPTZ,
+    effective_to TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_config_asset_type_status ON config_asset (asset_type, status);
+CREATE INDEX IF NOT EXISTS idx_config_asset_applicability ON config_asset USING GIN (applicability);
+
+CREATE TABLE IF NOT EXISTS review_profile (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    version INTEGER NOT NULL DEFAULT 1,
+    status TEXT NOT NULL DEFAULT 'draft',
+    applicability JSONB NOT NULL DEFAULT '{}'::jsonb,
+    description TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_review_profile_status ON review_profile (status);
+
+CREATE TABLE IF NOT EXISTS review_profile_asset (
+    id BIGSERIAL PRIMARY KEY,
+    profile_id TEXT NOT NULL REFERENCES review_profile(id) ON DELETE CASCADE,
+    asset_id TEXT NOT NULL REFERENCES config_asset(id),
+    asset_type TEXT NOT NULL,
+    asset_version INTEGER NOT NULL DEFAULT 1,
+    required BOOLEAN NOT NULL DEFAULT true,
+    UNIQUE (profile_id, asset_id, asset_version)
+);
+
+CREATE TABLE IF NOT EXISTS llm_execution (
+    id TEXT PRIMARY KEY,
+    task_id TEXT REFERENCES review_task(id) ON DELETE SET NULL,
+    purpose TEXT NOT NULL,
+    asset_id TEXT,
+    prompt_template_id TEXT,
+    model TEXT NOT NULL,
+    input_payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+    output_payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+    raw_output_preview TEXT,
+    status TEXT NOT NULL,
+    confidence DOUBLE PRECISION,
+    latency_ms DOUBLE PRECISION,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 CREATE TABLE IF NOT EXISTS audit_event (
     id BIGSERIAL PRIMARY KEY,
     task_id TEXT REFERENCES review_task(id) ON DELETE CASCADE,
@@ -150,6 +209,8 @@ CREATE INDEX IF NOT EXISTS idx_report_snapshot_task_id ON report_snapshot (task_
 
 ALTER TABLE report_snapshot ADD COLUMN IF NOT EXISTS report_type TEXT NOT NULL DEFAULT 'process_snapshot';
 ALTER TABLE report_snapshot ADD COLUMN IF NOT EXISTS generated_by TEXT NOT NULL DEFAULT 'system';
+ALTER TABLE review_task ADD COLUMN IF NOT EXISTS selected_profile_id TEXT;
+ALTER TABLE review_task ADD COLUMN IF NOT EXISTS selected_profile_snapshot JSONB NOT NULL DEFAULT '{}'::jsonb;
 """
 
 
@@ -188,9 +249,10 @@ class PostgresTaskStore:
                 cur.execute(
                     """
                     INSERT INTO review_task (
-                        id, name, status, overall_risk, decision, source_filename, created_at, payload
+                        id, name, status, overall_risk, decision, source_filename, created_at,
+                        selected_profile_id, selected_profile_snapshot, payload
                     )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     ON CONFLICT (id) DO UPDATE SET
                         name = EXCLUDED.name,
                         status = EXCLUDED.status,
@@ -198,6 +260,8 @@ class PostgresTaskStore:
                         decision = EXCLUDED.decision,
                         source_filename = EXCLUDED.source_filename,
                         created_at = EXCLUDED.created_at,
+                        selected_profile_id = EXCLUDED.selected_profile_id,
+                        selected_profile_snapshot = EXCLUDED.selected_profile_snapshot,
                         payload = EXCLUDED.payload,
                         updated_at = now()
                     """,
@@ -209,6 +273,8 @@ class PostgresTaskStore:
                         task.decision,
                         task.source_filename,
                         task.created_at,
+                        task.selected_profile_id,
+                        Jsonb(task.selected_profile_snapshot),
                         Jsonb(payload),
                     ),
                 )

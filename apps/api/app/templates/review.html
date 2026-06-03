@@ -13,6 +13,17 @@
     </div>
 </section>
 
+<section class="panel">
+    <div class="panel-head">
+        <div>
+            <h3>审查配置集</h3>
+            <p class="panel-subtitle">{{ data.profile.name }}{% if data.profile.version %} v{{ data.profile.version }}{% endif %}</p>
+        </div>
+        <span class="state-outline">{{ data.profile.asset_count }} 个配置资产</span>
+    </div>
+    <p class="endpoint">硬规则 {{ data.profile.hard_rule_count }} · 语义规则 {{ data.profile.semantic_rule_count }} · 报告模板 {{ data.profile.report_template_count }}</p>
+</section>
+
 <section class="metric-grid">
     {% for card in data.summary_cards %}
     <article class="metric-card tone-neutral">

@@ -4,6 +4,7 @@ from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
+from app.services.assets import AssetRegistry
 from app.services.db_store import DatabaseProbeClient
 from app.services.llm import LLMClient
 from app.services.object_store import ObjectStore
@@ -17,6 +18,20 @@ templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 router = APIRouter()
 
 
+def _dashboard_data(tasks: list) -> dict:  # noqa: ANN001
+    data = build_dashboard_payload(
+        tasks,
+        RagflowClient().probe(),
+        LLMClient().probe(),
+        DatabaseProbeClient().probe(),
+        ObjectStore().probe(),
+    )
+    registry = AssetRegistry()
+    data["review_profiles"] = [profile.model_dump() for profile in registry.list_profiles(status="active")]
+    data["asset_summary"] = registry.summary()
+    return data
+
+
 @router.get("/", response_class=HTMLResponse)
 def dashboard(request: Request) -> HTMLResponse:
     try:
@@ -28,13 +43,7 @@ def dashboard(request: Request) -> HTMLResponse:
         "dashboard.html",
         {
             "page_title": "合同合规审查工作台",
-            "data": build_dashboard_payload(
-                tasks,
-                RagflowClient().probe(),
-                LLMClient().probe(),
-                DatabaseProbeClient().probe(),
-                ObjectStore().probe(),
-            ),
+            "data": _dashboard_data(tasks),
         },
     )
 
@@ -50,13 +59,7 @@ def tasks(request: Request) -> HTMLResponse:
         "dashboard.html",
         {
             "page_title": "任务总览",
-            "data": build_dashboard_payload(
-                task_items,
-                RagflowClient().probe(),
-                LLMClient().probe(),
-                DatabaseProbeClient().probe(),
-                ObjectStore().probe(),
-            ),
+            "data": _dashboard_data(task_items),
         },
     )
 
@@ -64,6 +67,7 @@ def tasks(request: Request) -> HTMLResponse:
 @router.post("/tasks/create")
 async def create_task(
     contract_name: str | None = Form(default=None),
+    selected_profile_id: str | None = Form(default=None),
     file: UploadFile = File(...),
 ) -> RedirectResponse:
     try:
@@ -72,6 +76,7 @@ async def create_task(
             payload=await file.read(),
             contract_name=contract_name,
             content_type=file.content_type,
+            selected_profile_id=selected_profile_id,
         )
     except ContractUploadError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

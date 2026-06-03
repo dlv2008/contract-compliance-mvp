@@ -49,19 +49,37 @@ def test_docs_endpoint(client: TestClient) -> None:
     assert response.status_code == 200
 
 
+def test_review_profiles_and_assets_are_seeded(client: TestClient) -> None:
+    profiles_response = client.get("/api/review-profiles")
+    assets_response = client.get("/api/assets")
+
+    assert profiles_response.status_code == 200
+    assert assets_response.status_code == 200
+    profiles = profiles_response.json()["items"]
+    assets = assets_response.json()["items"]
+
+    assert any(item["id"] == "profile-procurement-basic-v1" for item in profiles)
+    assert any(item["asset_type"] == "hard_rule" for item in assets)
+    assert any(item["asset_type"] == "report_template" for item in assets)
+
+
 def test_create_task_and_fetch_review_payload(client: TestClient) -> None:
     sample_path = sample_contract("采购合同-样本B-收款账户不一致风险版.md")
     payload = sample_path.read_bytes()
 
     create_response = client.post(
         "/api/tasks",
-        data={"contract_name": "办公电脑采购合同"},
+        data={
+            "contract_name": "办公电脑采购合同",
+            "selected_profile_id": "profile-procurement-basic-v1",
+        },
         files={"file": ("contract.md", payload, "text/markdown")},
     )
 
     assert create_response.status_code == 201
     task = create_response.json()["task"]
     assert task["overall_risk"] == "red"
+    assert task["selected_profile_id"] == "profile-procurement-basic-v1"
 
     detail_response = client.get(f"/api/tasks/{task['id']}")
     assert detail_response.status_code == 200
@@ -71,6 +89,8 @@ def test_create_task_and_fetch_review_payload(client: TestClient) -> None:
     assert "FIN-PUR-003" in rule_ids
     assert "FIN-PUR-005" in rule_ids
     assert review_task["task"]["risk"] == "高风险"
+    assert review_task["profile"]["id"] == "profile-procurement-basic-v1"
+    assert review_task["profile"]["hard_rule_count"] >= 1
     assert len(review_task["workflow_steps"]) >= 5
     assert any(event["type"] == "rule.evaluate" for event in review_task["trace"])
     assert review_task["report"]["summary"]
@@ -162,12 +182,23 @@ def test_create_task_and_fetch_review_payload(client: TestClient) -> None:
 def test_rejects_unsupported_upload_type(client: TestClient) -> None:
     response = client.post(
         "/api/tasks",
-        data={"contract_name": "bad file"},
+        data={"contract_name": "bad file", "selected_profile_id": "profile-procurement-basic-v1"},
         files={"file": ("contract.pdf", b"%PDF-1.4", "application/pdf")},
     )
 
     assert response.status_code == 400
     assert ".md" in response.json()["detail"]
+
+
+def test_rejects_upload_without_review_profile(client: TestClient) -> None:
+    response = client.post(
+        "/api/tasks",
+        data={"contract_name": "missing profile"},
+        files={"file": ("contract.md", b"# contract", "text/markdown")},
+    )
+
+    assert response.status_code == 400
+    assert "配置集" in response.json()["detail"]
 
 
 def test_dashboard_and_review_pages_render_created_task(client: TestClient) -> None:
@@ -176,7 +207,10 @@ def test_dashboard_and_review_pages_render_created_task(client: TestClient) -> N
 
     response = client.post(
         "/tasks/create",
-        data={"contract_name": "营销系统开发服务合同"},
+        data={
+            "contract_name": "营销系统开发服务合同",
+            "selected_profile_id": "profile-service-basic-v1",
+        },
         files={"file": ("service.md", payload, "text/markdown")},
         follow_redirects=False,
     )
@@ -187,6 +221,7 @@ def test_dashboard_and_review_pages_render_created_task(client: TestClient) -> N
     dashboard_response = client.get("/")
     assert dashboard_response.status_code == 200
     assert "营销系统开发服务合同" in dashboard_response.text
+    assert "服务合同基础审查" in dashboard_response.text
 
     review_api_response = client.get("/api/tasks")
     task_id = review_api_response.json()["items"][0]["id"]
@@ -198,6 +233,7 @@ def test_dashboard_and_review_pages_render_created_task(client: TestClient) -> N
 
     review_response = client.get(review_url)
     assert review_response.status_code == 200
+    assert "审查配置集" in review_response.text
     assert "/task-decision" in review_response.text
     assert "/reports" in review_response.text
     assert "RAGFlow 状态" in review_response.text

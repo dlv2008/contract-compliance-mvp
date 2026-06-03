@@ -4,6 +4,7 @@ from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import JSONResponse, PlainTextResponse
 from pydantic import BaseModel, Field
 
+from app.services.assets import AssetRegistry
 from app.services.db_store import DatabaseProbeClient
 from app.services.llm import LLMClient
 from app.services.object_store import ObjectStore
@@ -44,9 +45,31 @@ def list_tasks() -> dict:
     return {"items": tasks, "total": len(tasks)}
 
 
+@router.get("/review-profiles")
+def list_review_profiles(status: str | None = "active", contract_type: str | None = None) -> dict:
+    profiles = AssetRegistry().list_profiles(status=status, contract_type=contract_type)
+    return {
+        "items": [
+            {
+                **profile.model_dump(exclude={"assets"}),
+                "asset_counts": _asset_counts(profile),
+            }
+            for profile in profiles
+        ],
+        "total": len(profiles),
+    }
+
+
+@router.get("/assets")
+def list_assets(asset_type: str | None = None, status: str | None = None) -> dict:
+    assets = AssetRegistry().list_assets(asset_type=asset_type, status=status)
+    return {"items": [asset.model_dump() for asset in assets], "total": len(assets)}
+
+
 @router.post("/tasks", status_code=201)
 async def create_task(
     contract_name: str | None = Form(default=None),
+    selected_profile_id: str | None = Form(default=None),
     file: UploadFile = File(...),
 ) -> JSONResponse:
     try:
@@ -55,6 +78,7 @@ async def create_task(
             payload=await file.read(),
             contract_name=contract_name,
             content_type=file.content_type,
+            selected_profile_id=selected_profile_id,
         )
     except ContractUploadError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -63,6 +87,8 @@ async def create_task(
 
     payload = build_task_summary(task)
     payload["overall_risk"] = task.overall_risk
+    payload["selected_profile_id"] = task.selected_profile_id
+    payload["selected_profile_name"] = task.selected_profile_name
     payload["review_url"] = f"/reviews/{task.id}"
     return JSONResponse(status_code=201, content={"task": payload})
 
@@ -232,3 +258,10 @@ def _ensure_task_exists(repository: TaskRepository, task_id: str) -> None:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     if task is None:
         raise HTTPException(status_code=404, detail="Task does not exist.")
+
+
+def _asset_counts(profile) -> dict:  # noqa: ANN001
+    counts: dict[str, int] = {}
+    for asset in profile.assets:
+        counts[asset.asset_type] = counts.get(asset.asset_type, 0) + 1
+    return counts

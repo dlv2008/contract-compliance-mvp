@@ -10,6 +10,7 @@ from pydantic import ValidationError
 
 from app.config import Settings, get_settings
 from app.models import AgentTraceEvent, ReportSnapshot, ReviewActionRecord, TaskRecord
+from app.services.assets import AssetNotFoundError, AssetRegistry
 from app.services.db_store import PostgresTaskStore
 from app.services.object_store import ObjectStorageError, ObjectStore
 from app.services.review_engine import (
@@ -80,7 +81,10 @@ class TaskRepository:
         payload: bytes,
         contract_name: str | None = None,
         content_type: str | None = None,
+        selected_profile_id: str | None = None,
+        require_profile: bool = True,
     ) -> TaskRecord:
+        selected_profile = self._resolve_profile(selected_profile_id, require_profile=require_profile)
         if not payload:
             raise ContractUploadError("上传文件为空，请重新选择合同文件。")
         if len(payload) > self.settings.max_upload_bytes:
@@ -110,7 +114,8 @@ class TaskRepository:
             source_filename=source_filename,
             contract_name=contract_name,
             contract_text=contract_text,
-        ).model_copy(update={"stored_file": stored_file})
+        )
+        task = self._apply_profile_snapshot(task, selected_profile).model_copy(update={"stored_file": stored_file})
         task = self._write_report_snapshot(task)
         if self._use_postgres():
             self._bootstrap_if_needed()
@@ -375,7 +380,7 @@ class TaskRepository:
             payload = json.loads(self.settings.task_store_path.read_text(encoding="utf-8"))
             if not isinstance(payload, list):
                 raise TaskStorageError("任务存储文件格式不是列表。")
-            return [TaskRecord.model_validate(item) for item in payload]
+            return [self._ensure_profile_snapshot(TaskRecord.model_validate(item)) for item in payload]
         except (json.JSONDecodeError, OSError, ValidationError, TaskStorageError) as exc:
             backup_path = self._backup_corrupt_store()
             raise TaskStorageError(f"任务存储文件无法读取，已备份到 {backup_path.name}。") from exc
@@ -422,9 +427,36 @@ class TaskRepository:
                 source_filename=sample_path.name,
                 contract_name=sample_path.stem,
                 contract_text=payload.decode("utf-8"),
-            ).model_copy(update={"stored_file": stored_file})
+            )
+            profile = AssetRegistry().default_profile_for_contract_type(task.contract_type)
+            task = self._apply_profile_snapshot(task, profile).model_copy(update={"stored_file": stored_file})
             tasks.append(task)
         return tasks
+
+    def _resolve_profile(self, profile_id: str | None, *, require_profile: bool):
+        registry = AssetRegistry()
+        try:
+            return registry.get_active_profile(profile_id)
+        except AssetNotFoundError as exc:
+            if require_profile:
+                raise ContractUploadError(str(exc)) from exc
+            return registry.get_active_profile("profile-basic-contract-review-v1")
+
+    def _apply_profile_snapshot(self, task: TaskRecord, profile) -> TaskRecord:  # noqa: ANN001
+        registry = AssetRegistry()
+        return task.model_copy(
+            update={
+                "selected_profile_id": profile.id,
+                "selected_profile_name": profile.name,
+                "selected_profile_snapshot": registry.freeze_profile(profile),
+            }
+        )
+
+    def _ensure_profile_snapshot(self, task: TaskRecord) -> TaskRecord:
+        if task.selected_profile_id and task.selected_profile_snapshot:
+            return task
+        profile = AssetRegistry().default_profile_for_contract_type(task.contract_type)
+        return self._apply_profile_snapshot(task, profile)
 
     def _load_existing_json_tasks(self) -> list[TaskRecord]:
         if not self.settings.task_store_path.exists():
