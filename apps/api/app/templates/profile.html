@@ -51,6 +51,7 @@
                     <p>{{ asset.description }}</p>
                     <dl class="compact-dl">
                         <div><dt>资产 ID</dt><dd>{{ asset.id }}</dd></div>
+                        <div><dt>内容 Hash</dt><dd>{{ asset.content_hash[:12] if asset.content_hash else "未生成" }}</dd></div>
                         <div><dt>绑定说明</dt><dd>{{ ref.binding_reason or "未填写。" }}</dd></div>
                         <div><dt>执行状态</dt><dd>{{ execution_status.summary }}</dd></div>
                         <div><dt>内容</dt><dd>{{ asset.content }}</dd></div>

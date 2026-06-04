@@ -51,6 +51,12 @@ class AssetReviewRequest(BaseModel):
     comment: str | None = None
 
 
+class CloneAssetRequest(BaseModel):
+    name: str | None = None
+    description: str | None = None
+    actor: str = "reviewer"
+
+
 class RuleDraftGenerateRequest(BaseModel):
     source_type: str = "policy_document"
     source_text: str
@@ -150,6 +156,20 @@ def create_asset(payload: CreateAssetRequest) -> JSONResponse:
         )
     except AssetStateError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return JSONResponse(status_code=201, content={"asset": asset.model_dump()})
+
+
+@router.post("/assets/{asset_id}/versions", status_code=201)
+def clone_asset(asset_id: str, payload: CloneAssetRequest) -> JSONResponse:
+    try:
+        asset = AssetRegistry().clone_asset(
+            asset_id,
+            name=payload.name,
+            description=payload.description,
+            actor=payload.actor,
+        )
+    except AssetNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     return JSONResponse(status_code=201, content={"asset": asset.model_dump()})
 
 

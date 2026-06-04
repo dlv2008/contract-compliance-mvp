@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import uuid
@@ -113,6 +114,23 @@ def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+def compute_asset_content_hash(
+    *,
+    asset_type: str,
+    applicability: dict,
+    content: dict,
+    schema_version: str,
+) -> str:
+    payload = {
+        "asset_type": asset_type,
+        "applicability": applicability,
+        "content": content,
+        "schema_version": schema_version,
+    }
+    raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
 def _asset(
     asset_id: str,
     asset_type: str,
@@ -124,15 +142,23 @@ def _asset(
     description: str | None = None,
 ) -> ConfigAsset:
     now = utc_now()
+    resolved_applicability = applicability or {}
+    resolved_content = content or {}
     return ConfigAsset(
         id=asset_id,
         asset_type=asset_type,
         name=name,
         version=1,
         status="active",
-        applicability=applicability or {},
-        content=content or {},
+        applicability=resolved_applicability,
+        content=resolved_content,
         schema_version=schema_version,
+        content_hash=compute_asset_content_hash(
+            asset_type=asset_type,
+            applicability=resolved_applicability,
+            content=resolved_content,
+            schema_version=schema_version,
+        ),
         description=description,
         created_by="seed",
         approved_by="seed",
@@ -727,7 +753,10 @@ class AssetRegistry:
         if asset_type not in self.asset_types():
             raise AssetStateError("不支持的配置资产类型。")
         assets, profiles = self._load_state()
-        version = self._next_asset_version(assets, name, applicability or {})
+        resolved_applicability = applicability or {}
+        resolved_content = content or {}
+        resolved_schema_version = schema_version or f"{asset_type.replace('_', '-')}-v1"
+        version = self._next_asset_version(assets, name, resolved_applicability)
         now = utc_now()
         draft = ConfigAsset(
             id=f"asset-{asset_type.replace('_', '-')}-{uuid.uuid4().hex[:8]}",
@@ -735,9 +764,15 @@ class AssetRegistry:
             name=name,
             version=version,
             status="draft",
-            applicability=applicability or {},
-            content=content or {},
-            schema_version=schema_version or f"{asset_type.replace('_', '-')}-v1",
+            applicability=resolved_applicability,
+            content=resolved_content,
+            schema_version=resolved_schema_version,
+            content_hash=compute_asset_content_hash(
+                asset_type=asset_type,
+                applicability=resolved_applicability,
+                content=resolved_content,
+                schema_version=resolved_schema_version,
+            ),
             description=description,
             parent_asset_id=parent_asset_id,
             created_by=actor or "reviewer",
@@ -877,6 +912,41 @@ class AssetRegistry:
             effective_from=utc_now(),
         )
 
+    def clone_asset(
+        self,
+        asset_id: str,
+        *,
+        name: str | None = None,
+        description: str | None = None,
+        actor: str = "reviewer",
+    ) -> ConfigAsset:
+        assets, profiles = self._load_state()
+        source = next((item for item in assets if item.id == asset_id), None)
+        if source is None:
+            raise AssetNotFoundError("配置资产不存在。")
+        version = max(source.version + 1, self._next_asset_version(assets, source.name, source.applicability))
+        now = utc_now()
+        draft_id = self._next_asset_id(source, version, assets)
+        draft = ConfigAsset(
+            id=draft_id,
+            asset_type=source.asset_type,
+            name=name or source.name,
+            version=version,
+            status="draft",
+            applicability=dict(source.applicability),
+            content=dict(source.content),
+            schema_version=source.schema_version,
+            content_hash=source.content_hash,
+            description=description if description is not None else source.description,
+            parent_asset_id=source.id,
+            created_by=actor or "reviewer",
+            created_at=now,
+            updated_at=now,
+        )
+        assets.append(draft)
+        self._save_state(assets, profiles)
+        return draft
+
     def clone_profile(
         self,
         profile_id: str,
@@ -995,6 +1065,7 @@ class AssetRegistry:
                     "name": asset.name,
                     "version": asset.version,
                     "schema_version": asset.schema_version,
+                    "content_hash": asset.content_hash,
                     "status": asset.status,
                     "content": asset.content,
                 }
@@ -1028,6 +1099,7 @@ class AssetRegistry:
                 {
                     "asset_id": asset.id,
                     "asset_version": asset.version,
+                    "asset_content_hash": asset.content_hash,
                     **asset.content,
                 }
             )
@@ -1190,6 +1262,9 @@ class AssetRegistry:
         except (OSError, json.JSONDecodeError, ValidationError) as exc:
             raise AssetStateError("配置资产仓库无法读取。") from exc
         assets, profiles = self._merge_seed_state(assets, profiles)
+        assets, hash_changed = self._ensure_asset_content_hashes(assets)
+        if hash_changed:
+            self._save_state(assets, profiles)
         return assets, profiles
 
     def _ensure_state_file(self) -> None:
@@ -1207,6 +1282,22 @@ class AssetRegistry:
         }
         temp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         temp_path.replace(self.state_path)
+
+    def _ensure_asset_content_hashes(self, assets: list[ConfigAsset]) -> tuple[list[ConfigAsset], bool]:
+        changed = False
+        updated_assets = []
+        for asset in assets:
+            expected_hash = compute_asset_content_hash(
+                asset_type=asset.asset_type,
+                applicability=asset.applicability,
+                content=asset.content,
+                schema_version=asset.schema_version,
+            )
+            if asset.content_hash != expected_hash:
+                asset = asset.model_copy(update={"content_hash": expected_hash})
+                changed = True
+            updated_assets.append(asset)
+        return updated_assets, changed
 
     def _merge_seed_state(
         self,
@@ -1243,6 +1334,14 @@ class AssetRegistry:
             if asset.name == name and asset.applicability == applicability
         ]
         return max(versions, default=0) + 1
+
+    def _next_asset_id(self, source: ConfigAsset, version: int, assets: list[ConfigAsset]) -> str:
+        existing_ids = {asset.id for asset in assets}
+        stem = source.id.rsplit("-v", 1)[0] if "-v" in source.id else source.id
+        candidate = f"{stem}-v{version}"
+        if candidate not in existing_ids:
+            return candidate
+        return f"asset-{source.asset_type.replace('_', '-')}-{uuid.uuid4().hex[:8]}"
 
     def _next_profile_version(self, profiles: list[ReviewProfile], source: ReviewProfile) -> int:
         stem = source.id.rsplit("-v", 1)[0] if "-v" in source.id else source.id

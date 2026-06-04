@@ -86,6 +86,7 @@
                     <p>{{ asset.description or "未填写说明。" }}</p>
                     <dl class="compact-dl">
                         <div><dt>ID</dt><dd>{{ asset.id }}</dd></div>
+                        <div><dt>内容 Hash</dt><dd>{{ asset.content_hash[:12] if asset.content_hash else "未生成" }}</dd></div>
                         <div><dt>适用性</dt><dd>{{ asset.applicability }}</dd></div>
                         <div><dt>执行状态</dt><dd>{{ asset.execution_status.summary }}</dd></div>
                         <div><dt>内容</dt><dd>{{ asset.content }}</dd></div>
@@ -105,8 +106,16 @@
                     <form action="/assets/{{ asset.id }}/publish" method="post">
                         <button class="button-primary" type="submit">发布为 active</button>
                     </form>
+                    <form action="/assets/{{ asset.id }}/versions" method="post">
+                        <input class="input" type="text" name="name" value="{{ asset.name }}" />
+                        <button class="button-secondary" type="submit">复制为草稿新版本</button>
+                    </form>
                     {% elif asset.status == "active" %}
-                    <span class="panel-note">可绑定到配置集草稿版本</span>
+                    <span class="panel-note">可绑定到配置集草稿版本；如需修改，请先复制为草稿新版本。</span>
+                    <form action="/assets/{{ asset.id }}/versions" method="post">
+                        <input class="input" type="text" name="name" value="{{ asset.name }}" />
+                        <button class="button-secondary" type="submit">复制为草稿新版本</button>
+                    </form>
                     {% else %}
                     <span class="panel-note">仅用于历史追溯</span>
                     {% endif %}

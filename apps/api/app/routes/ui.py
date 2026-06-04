@@ -177,6 +177,19 @@ def create_asset_draft(
     return RedirectResponse(url="/assets?status=draft", status_code=303)
 
 
+@router.post("/assets/{asset_id}/versions")
+def clone_asset_form(
+    asset_id: str,
+    name: str | None = Form(default=None),
+    description: str | None = Form(default=None),
+) -> RedirectResponse:
+    try:
+        draft = AssetRegistry().clone_asset(asset_id, name=name, description=description)
+    except (AssetNotFoundError, AssetStateError) as exc:
+        return _redirect_with_asset_error("/assets", exc)
+    return RedirectResponse(url=f"/assets?status=draft&q={draft.id}", status_code=303)
+
+
 @router.post("/assets/{asset_id}/approve")
 def approve_asset_form(asset_id: str, comment: str | None = Form(default=None)) -> RedirectResponse:
     try:

@@ -136,6 +136,7 @@ class ConfigAsset(BaseModel):
     applicability: dict = Field(default_factory=dict)
     content: dict = Field(default_factory=dict)
     schema_version: str = "asset-v1"
+    content_hash: str | None = None
     description: str | None = None
     parent_asset_id: str | None = None
     created_by: str = "system"

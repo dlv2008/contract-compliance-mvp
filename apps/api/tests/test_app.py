@@ -82,6 +82,29 @@ def test_asset_execution_audit_reports_real_runtime_coverage(client: TestClient)
     assert any(item["asset_type"] == "hard_rule" for item in profile_audit["items"])
 
 
+def test_asset_versions_are_copied_as_draft_with_content_hash(client: TestClient) -> None:
+    source_response = client.get("/api/assets/asset-hardrule-prepay-v1")
+    assert source_response.status_code == 200
+    source_asset = source_response.json()["asset"]
+    source_hash = source_asset["content_hash"]
+
+    clone_response = client.post(
+        "/api/assets/asset-hardrule-prepay-v1/versions",
+        json={"name": "Prepay threshold next version"},
+    )
+    assert clone_response.status_code == 201
+    cloned_asset = clone_response.json()["asset"]
+
+    assert cloned_asset["status"] == "draft"
+    assert cloned_asset["parent_asset_id"] == "asset-hardrule-prepay-v1"
+    assert cloned_asset["version"] == source_asset["version"] + 1
+    assert cloned_asset["content_hash"] == source_hash
+
+    unchanged_source = client.get("/api/assets/asset-hardrule-prepay-v1").json()["asset"]
+    assert unchanged_source["status"] == "active"
+    assert unchanged_source["content_hash"] == source_hash
+
+
 def test_asset_management_closes_profile_usage_loop(client: TestClient) -> None:
     draft_response = client.post(
         "/api/rule-drafts/generate",
@@ -168,8 +191,10 @@ def test_asset_management_closes_profile_usage_loop(client: TestClient) -> None:
     detail = detail_response.json()["task"]
     rule_ids = {item["rule"] for item in detail["risks"]}
     snapshot_asset_ids = {item["asset_id"] for item in detail["profile"]["assets"]}
+    snapshot_hashes = {item["asset_id"]: item.get("content_hash") for item in detail["profile"]["assets"]}
 
     assert active_asset["id"] in snapshot_asset_ids
+    assert snapshot_hashes[active_asset["id"]] == active_asset["content_hash"]
     assert "FIN-PUR-003" not in rule_ids
     assert "FIN-PUR-005" in rule_ids
 
