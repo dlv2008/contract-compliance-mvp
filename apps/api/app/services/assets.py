@@ -69,6 +69,41 @@ def _asset(
     )
 
 
+def _hard_rule(
+    asset_id: str,
+    name: str,
+    *,
+    contract_type: str,
+    rule_id: str,
+    title: str,
+    level: str,
+    conditions: list[dict],
+    evidence_fact_keys: list[str],
+    policy_reference_ids: list[str],
+    reason_template: str,
+    action_template: str,
+    description: str | None = None,
+) -> ConfigAsset:
+    return _asset(
+        asset_id,
+        "hard_rule",
+        name,
+        applicability={"contract_type": contract_type},
+        content={
+            "rule_id": rule_id,
+            "title": title,
+            "level": level,
+            "conditions": conditions,
+            "evidence_fact_keys": evidence_fact_keys,
+            "policy_reference_ids": policy_reference_ids,
+            "reason_template": reason_template,
+            "action_template": action_template,
+        },
+        schema_version="hard-rule-v2",
+        description=description,
+    )
+
+
 SEED_ASSETS: list[ConfigAsset] = [
     _asset(
         "asset-clause-standard-cn-v1",
@@ -125,34 +160,247 @@ SEED_ASSETS: list[ConfigAsset] = [
         schema_version="extraction-schema-v1",
         description="服务合同审查需要抽取的基础字段集合。",
     ),
-    _asset(
+    _hard_rule(
+        "asset-hardrule-procurement-invoice-required-v1",
+        "采购合同发票条款必填",
+        contract_type="procurement_contract",
+        rule_id="FIN-PUR-001",
+        title="缺失发票条款",
+        level="medium",
+        conditions=[{"fact_key": "invoice.type", "operator": "missing"}],
+        evidence_fact_keys=[],
+        policy_reference_ids=["POLICY-PUR-001", "POLICY-FUND-002"],
+        reason_template="合同文本中未发现明确发票类型、开票方式或开票要求，后续付款审核口径不完整。",
+        action_template="补充发票类型、开票时点和发票内容，确保合同与付款资料一致。",
+        description="采购合同必须明确发票类型、开票方式或开票要求。",
+    ),
+    _hard_rule(
+        "asset-hardrule-service-invoice-required-v1",
+        "服务合同发票条款必填",
+        contract_type="service_contract",
+        rule_id="FIN-SVC-001",
+        title="缺失发票条款",
+        level="medium",
+        conditions=[{"fact_key": "invoice.type", "operator": "missing"}],
+        evidence_fact_keys=[],
+        policy_reference_ids=["POLICY-FUND-002"],
+        reason_template="合同文本中未发现明确发票类型、开票方式或开票要求，后续付款审核口径不完整。",
+        action_template="补充发票类型、开票时点和发票内容，确保合同与付款资料一致。",
+        description="服务合同必须明确发票类型、开票方式或开票要求。",
+    ),
+    _hard_rule(
+        "asset-hardrule-procurement-tax-rate-required-v1",
+        "采购合同税率条款必填",
+        contract_type="procurement_contract",
+        rule_id="FIN-PUR-002",
+        title="缺失税率条款",
+        level="medium",
+        conditions=[
+            {"fact_key": "invoice.type", "operator": "present"},
+            {"fact_key": "invoice.tax_rate", "operator": "missing"},
+        ],
+        evidence_fact_keys=["invoice.type"],
+        policy_reference_ids=["POLICY-FUND-002"],
+        reason_template="合同提到了发票，但未写明税率或税点，税务处理和付款审核依据不足。",
+        action_template="补充明确税率、发票类型及开票内容，避免后续开票与付款口径不一致。",
+        description="出现发票要求时必须明确税率。",
+    ),
+    _hard_rule(
+        "asset-hardrule-service-tax-rate-required-v1",
+        "服务合同税率条款必填",
+        contract_type="service_contract",
+        rule_id="FIN-SVC-002",
+        title="缺失税率条款",
+        level="medium",
+        conditions=[
+            {"fact_key": "invoice.type", "operator": "present"},
+            {"fact_key": "invoice.tax_rate", "operator": "missing"},
+        ],
+        evidence_fact_keys=["invoice.type"],
+        policy_reference_ids=["POLICY-FUND-002"],
+        reason_template="合同提到了发票，但未写明税率或税点，税务处理和付款审核依据不足。",
+        action_template="补充明确税率、发票类型及开票内容，避免后续开票与付款口径不一致。",
+        description="出现发票要求时必须明确税率。",
+    ),
+    _hard_rule(
         "asset-hardrule-prepay-v1",
-        "hard_rule",
         "预付款比例控制",
-        applicability={"contract_type": ["procurement_contract", "service_contract"]},
-        content={
-            "fact_key": "payment.prepay_ratio",
-            "operator": ">",
-            "value": 30,
-            "risk_level": "high",
-            "policy_reference": "采购付款制度：预付款原则上不得超过合同总价 30%。",
-        },
-        schema_version="hard-rule-v1",
+        contract_type="procurement_contract",
+        rule_id="FIN-PUR-003",
+        title="采购预付款比例超过 {threshold}%",
+        level="high",
+        conditions=[{"fact_key": "payment.prepay_ratio", "operator": ">", "value": 30}],
+        evidence_fact_keys=["payment.prepay_ratio"],
+        policy_reference_ids=["POLICY-PUR-002", "POLICY-FUND-006"],
+        reason_template="合同约定预付款比例为 {payment.prepay_ratio}，已超过配置资产 {asset_id} 设定的 {threshold}% 阈值。",
+        action_template="将预付款比例降至 {threshold}% 以内，或补充采购与财务的例外审批说明。",
         description="当预付款比例超过阈值时命中风险。",
     ),
-    _asset(
+    _hard_rule(
+        "asset-hardrule-service-prepay-v1",
+        "服务预付款比例控制",
+        contract_type="service_contract",
+        rule_id="FIN-SVC-003",
+        title="服务预付款比例超过 {threshold}%",
+        level="medium",
+        conditions=[
+            {"fact_key": "payment.prepay_ratio", "operator": ">", "value": 30},
+            {"fact_key": "acceptance.required", "operator": "is", "value": False},
+        ],
+        evidence_fact_keys=["payment.prepay_ratio"],
+        policy_reference_ids=["POLICY-FUND-003"],
+        reason_template="服务合同预付款比例为 {payment.prepay_ratio}，已超过配置资产 {asset_id} 设定的 {threshold}% 阈值。",
+        action_template="建议补充例外审批依据，或将预付款比例调整至 {threshold}% 以内。",
+        description="服务合同预付款超过阈值但未与验收节点绑定时命中中风险。",
+    ),
+    _hard_rule(
+        "asset-hardrule-service-prepay-acceptance-v1",
+        "服务高预付款且尾款依赖验收",
+        contract_type="service_contract",
+        rule_id="FIN-SVC-004",
+        title="高预付款且尾款依赖验收",
+        level="high",
+        conditions=[
+            {"fact_key": "payment.prepay_ratio", "operator": ">", "value": 30},
+            {"fact_key": "acceptance.required", "operator": "is", "value": True},
+        ],
+        evidence_fact_keys=["payment.prepay_ratio", "acceptance.required"],
+        policy_reference_ids=["POLICY-FUND-003", "POLICY-FUND-004", "POLICY-FUND-006"],
+        reason_template="服务合同预付款比例为 {payment.prepay_ratio}，超过配置资产 {asset_id} 的 {threshold}% 阈值，且尾款与交付/验收节点绑定，资金前置风险较高。",
+        action_template="压低预付款比例至 {threshold}% 以内，并增加阶段性交付与验收控制，必要时进入联合复核。",
+        description="服务合同高预付款且尾款依赖验收时命中高风险。",
+    ),
+    _hard_rule(
+        "asset-hardrule-procurement-acceptance-required-v1",
+        "采购合同验收条款必填",
+        contract_type="procurement_contract",
+        rule_id="FIN-PUR-004",
+        title="缺失验收条款",
+        level="medium",
+        conditions=[{"fact_key": "acceptance.required", "operator": "is", "value": False}],
+        evidence_fact_keys=[],
+        policy_reference_ids=["POLICY-PUR-003"],
+        reason_template="合同中未发现明确验收、交付成果确认或到货验收安排，后续尾款支付依据不足。",
+        action_template="补充明确的验收标准、验收主体和验收节点，避免以默认认可替代关键确认。",
+        description="采购合同应明确验收标准和节点。",
+    ),
+    _hard_rule(
+        "asset-hardrule-service-acceptance-required-v1",
+        "服务合同验收条款必填",
+        contract_type="service_contract",
+        rule_id="FIN-SVC-005",
+        title="缺失验收条款",
+        level="medium",
+        conditions=[{"fact_key": "acceptance.required", "operator": "is", "value": False}],
+        evidence_fact_keys=[],
+        policy_reference_ids=["POLICY-FUND-004"],
+        reason_template="合同中未发现明确验收、交付成果确认或到货验收安排，后续尾款支付依据不足。",
+        action_template="补充明确的验收标准、验收主体和验收节点，避免以默认认可替代关键确认。",
+        description="服务合同应明确验收标准和节点。",
+    ),
+    _hard_rule(
         "asset-hardrule-payee-v1",
-        "hard_rule",
         "收款主体一致性控制",
-        applicability={"contract_type": ["procurement_contract", "service_contract"]},
-        content={
-            "fact_key": "account.same_as_counterparty",
-            "operator": "is",
-            "value": False,
-            "risk_level": "high",
-        },
-        schema_version="hard-rule-v1",
+        contract_type="procurement_contract",
+        rule_id="FIN-PUR-005",
+        title="收款账户主体与签约乙方不一致",
+        level="high",
+        conditions=[{"fact_key": "account.same_as_counterparty", "operator": "is", "value": False}],
+        evidence_fact_keys=["account.same_as_counterparty"],
+        policy_reference_ids=["POLICY-FUND-005", "POLICY-PUR-005"],
+        reason_template="合同乙方与收款账户名称不一致，存在代收款、关联方收款或账户变更未留痕的风险。",
+        action_template="要求提供专项审批和账户变更证明，或改回与签约主体一致的收款账户。",
         description="收款账户主体与签约相对方不一致时命中风险。",
+    ),
+    _hard_rule(
+        "asset-hardrule-service-payee-v1",
+        "服务收款主体一致性控制",
+        contract_type="service_contract",
+        rule_id="FIN-SVC-009",
+        title="收款账户主体与签约乙方不一致",
+        level="high",
+        conditions=[{"fact_key": "account.same_as_counterparty", "operator": "is", "value": False}],
+        evidence_fact_keys=["account.same_as_counterparty"],
+        policy_reference_ids=["POLICY-FUND-005"],
+        reason_template="合同乙方与收款账户名称不一致，存在代收款、关联方收款或账户变更未留痕的风险。",
+        action_template="要求提供专项审批和账户变更证明，或改回与签约主体一致的收款账户。",
+        description="服务合同收款账户主体与签约相对方不一致时命中风险。",
+    ),
+    _hard_rule(
+        "asset-hardrule-procurement-auto-renewal-v1",
+        "采购自动续约审批前提控制",
+        contract_type="procurement_contract",
+        rule_id="FIN-PUR-007",
+        title="自动续约缺少审批前提",
+        level="high",
+        conditions=[
+            {"fact_key": "term.auto_renewal", "operator": "is", "value": True},
+            {"fact_key": "approval.exception_required", "operator": "is", "value": False},
+        ],
+        evidence_fact_keys=["term.auto_renewal"],
+        policy_reference_ids=["POLICY-REV-004", "POLICY-PUR-006"],
+        reason_template="合同包含自动续约或默认顺延安排，但未看到重新审批、书面续签或授权边界控制。",
+        action_template="改为到期后重新审批并签署书面续约文件，不建议使用默认自动顺延。",
+        description="采购合同自动续约必须有审批或书面续签前提。",
+    ),
+    _hard_rule(
+        "asset-hardrule-service-auto-renewal-v1",
+        "服务自动续约审批前提控制",
+        contract_type="service_contract",
+        rule_id="FIN-SVC-006",
+        title="自动续约缺少审批前提",
+        level="high",
+        conditions=[
+            {"fact_key": "term.auto_renewal", "operator": "is", "value": True},
+            {"fact_key": "approval.exception_required", "operator": "is", "value": False},
+        ],
+        evidence_fact_keys=["term.auto_renewal"],
+        policy_reference_ids=["POLICY-REV-004"],
+        reason_template="合同包含自动续约或默认顺延安排，但未看到重新审批、书面续签或授权边界控制。",
+        action_template="改为到期后重新审批并签署书面续约文件，不建议使用默认自动顺延。",
+        description="服务合同自动续约必须有审批或书面续签前提。",
+    ),
+    _hard_rule(
+        "asset-hardrule-service-dispute-location-v1",
+        "服务争议解决地偏向乙方控制",
+        contract_type="service_contract",
+        rule_id="FIN-SVC-007",
+        title="争议解决地约定偏向乙方",
+        level="medium",
+        conditions=[{"fact_key": "dispute.raw", "operator": "contains", "value": "乙方所在地"}],
+        evidence_fact_keys=["dispute.location"],
+        policy_reference_ids=["POLICY-REV-005"],
+        reason_template="争议解决条款将仲裁或诉讼安排在乙方所在地，后续维权和举证成本偏高。",
+        action_template="建议改为甲方所在地法院或双方均可接受的争议解决地。",
+        description="服务合同争议解决地不宜单方面偏向乙方。",
+    ),
+    _hard_rule(
+        "asset-hardrule-service-liability-reciprocal-v1",
+        "服务违约责任对等控制",
+        contract_type="service_contract",
+        rule_id="FIN-SVC-008",
+        title="违约责任明显不对等",
+        level="high",
+        conditions=[{"fact_key": "liability.reciprocal", "operator": "is", "value": False}],
+        evidence_fact_keys=["liability.reciprocal"],
+        policy_reference_ids=["POLICY-REV-001"],
+        reason_template="合同对乙方责任设置了明显上限，但对甲方迟延付款责任扩张至全部损失和预期收益，责任分配失衡。",
+        action_template="将双方违约责任调整为对等口径，并统一责任边界或赔偿上限。",
+        description="服务合同违约责任应保持对等。",
+    ),
+    _hard_rule(
+        "asset-hardrule-procurement-warranty-required-v1",
+        "采购质保或保修条款必填",
+        contract_type="procurement_contract",
+        rule_id="FIN-PUR-006",
+        title="缺失质保或保修条款",
+        level="medium",
+        conditions=[{"fact_key": "warranty.present", "operator": "is", "value": False}],
+        evidence_fact_keys=[],
+        policy_reference_ids=["POLICY-PUR-004"],
+        reason_template="采购合同中未看到明确质保期限、保修责任或售后承诺，后续设备问题缺少追责抓手。",
+        action_template="补充质保期限、保修范围、响应时限与更换维修责任。",
+        description="采购合同应明确质保或保修安排。",
     ),
     _asset(
         "asset-semantic-auto-renewal-v1",
@@ -268,8 +516,13 @@ SEED_PROFILES: list[ReviewProfile] = [
         assets=[
             _ref("asset-clause-standard-cn-v1"),
             _ref("asset-extraction-procurement-v1"),
+            _ref("asset-hardrule-procurement-invoice-required-v1"),
+            _ref("asset-hardrule-procurement-tax-rate-required-v1"),
             _ref("asset-hardrule-prepay-v1", "采购预付款比例控制。"),
             _ref("asset-hardrule-payee-v1", "收款主体一致性控制。"),
+            _ref("asset-hardrule-procurement-acceptance-required-v1"),
+            _ref("asset-hardrule-procurement-auto-renewal-v1"),
+            _ref("asset-hardrule-procurement-warranty-required-v1"),
             _ref("asset-risk-policy-basic-v1"),
             _ref("asset-risk-message-basic-v1"),
             _ref("asset-report-compliance-basic-v1"),
@@ -283,8 +536,13 @@ SEED_PROFILES: list[ReviewProfile] = [
         assets=[
             _ref("asset-clause-standard-cn-v1"),
             _ref("asset-extraction-procurement-v1"),
+            _ref("asset-hardrule-procurement-invoice-required-v1"),
+            _ref("asset-hardrule-procurement-tax-rate-required-v1"),
             _ref("asset-hardrule-prepay-v1"),
             _ref("asset-hardrule-payee-v1"),
+            _ref("asset-hardrule-procurement-acceptance-required-v1"),
+            _ref("asset-hardrule-procurement-auto-renewal-v1"),
+            _ref("asset-hardrule-procurement-warranty-required-v1"),
             _ref("asset-semantic-auto-renewal-v1"),
             _ref("asset-prompt-semantic-rule-v1"),
             _ref("asset-risk-policy-basic-v1"),
@@ -300,7 +558,15 @@ SEED_PROFILES: list[ReviewProfile] = [
         assets=[
             _ref("asset-clause-standard-cn-v1"),
             _ref("asset-extraction-service-v1"),
-            _ref("asset-hardrule-prepay-v1"),
+            _ref("asset-hardrule-service-invoice-required-v1"),
+            _ref("asset-hardrule-service-tax-rate-required-v1"),
+            _ref("asset-hardrule-service-prepay-v1"),
+            _ref("asset-hardrule-service-prepay-acceptance-v1"),
+            _ref("asset-hardrule-service-acceptance-required-v1"),
+            _ref("asset-hardrule-service-payee-v1"),
+            _ref("asset-hardrule-service-auto-renewal-v1"),
+            _ref("asset-hardrule-service-dispute-location-v1"),
+            _ref("asset-hardrule-service-liability-reciprocal-v1"),
             _ref("asset-semantic-auto-renewal-v1"),
             _ref("asset-risk-policy-basic-v1"),
             _ref("asset-risk-message-basic-v1"),
@@ -425,12 +691,35 @@ class AssetRegistry:
         contract_type = (profile_hint or {}).get("contract_type") or "procurement_contract"
         threshold = self._extract_percent_threshold(source_text) or 30
         if "hard_rule" in selected_types:
+            rule_id = "FIN-PUR-003" if contract_type == "procurement_contract" else "FIN-SVC-003"
+            title = (
+                f"采购预付款比例超过 {threshold}%"
+                if contract_type == "procurement_contract"
+                else f"服务预付款比例超过 {threshold}%"
+            )
             drafts.append(
                 self.create_asset_draft(
                     asset_type="hard_rule",
                     name=f"制度草稿：预付款比例超过 {threshold}% 控制",
                     applicability={"contract_type": contract_type},
                     content={
+                        "rule_id": rule_id,
+                        "title": title,
+                        "level": "high" if contract_type == "procurement_contract" else "medium",
+                        "conditions": [
+                            {"fact_key": "payment.prepay_ratio", "operator": ">", "value": threshold}
+                        ],
+                        "evidence_fact_keys": ["payment.prepay_ratio"],
+                        "policy_reference_ids": ["POLICY-PUR-002", "POLICY-FUND-006"]
+                        if contract_type == "procurement_contract"
+                        else ["POLICY-FUND-003"],
+                        "reason_template": (
+                            "合同约定预付款比例为 {payment.prepay_ratio}，"
+                            "已超过配置资产 {asset_id} 设定的 {threshold}% 阈值。"
+                        ),
+                        "action_template": (
+                            "将预付款比例降至 {threshold}% 以内，或补充例外审批说明。"
+                        ),
                         "fact_key": "payment.prepay_ratio",
                         "operator": ">",
                         "value": threshold,
@@ -657,16 +946,26 @@ class AssetRegistry:
         assets, _ = self._load_state()
         threshold = 30
         source_asset_id = "asset-hardrule-prepay-v1"
+        hard_rules = []
         for ref in profile.assets:
             asset = next((item for item in assets if item.id == ref.asset_id), None)
             if not asset or asset.asset_type != "hard_rule" or asset.status != "active":
                 continue
-            if asset.content.get("fact_key") == "payment.prepay_ratio" and asset.content.get("operator") == ">":
-                threshold = float(asset.content.get("value") or threshold)
+            hard_rules.append(
+                {
+                    "asset_id": asset.id,
+                    "asset_version": asset.version,
+                    **asset.content,
+                }
+            )
+            threshold_condition = self._find_threshold_condition(asset)
+            if threshold_condition is not None:
+                threshold = float(threshold_condition)
                 source_asset_id = asset.id
         return {
             "prepay_threshold": threshold,
             "prepay_threshold_asset_id": source_asset_id,
+            "hard_rules": hard_rules,
         }
 
     def summary(self) -> dict:
@@ -777,15 +1076,23 @@ class AssetRegistry:
         profiles: list[ReviewProfile],
     ) -> tuple[list[ConfigAsset], list[ReviewProfile]]:
         changed = False
-        asset_ids = {asset.id for asset in assets}
+        assets_by_id = {asset.id: asset for asset in assets}
         for seed in SEED_ASSETS:
-            if seed.id not in asset_ids:
+            existing = assets_by_id.get(seed.id)
+            if existing is None:
                 assets.append(seed)
                 changed = True
-        profile_ids = {profile.id for profile in profiles}
+            elif existing.created_by == "seed" and existing.model_dump() != seed.model_dump():
+                assets = [seed if item.id == seed.id else item for item in assets]
+                changed = True
+        profiles_by_id = {profile.id: profile for profile in profiles}
         for seed in SEED_PROFILES:
-            if seed.id not in profile_ids:
+            existing = profiles_by_id.get(seed.id)
+            if existing is None:
                 profiles.append(seed)
+                changed = True
+            elif existing.created_by == "seed" and existing.model_dump() != seed.model_dump():
+                profiles = [seed if item.id == seed.id else item for item in profiles]
                 changed = True
         if changed:
             self._save_state(assets, profiles)
@@ -821,10 +1128,29 @@ class AssetRegistry:
         existing = next((asset for asset in assets if asset.id == ref.asset_id), None)
         if existing is None:
             return False
-        return (
-            existing.content.get("fact_key") == new_asset.content.get("fact_key")
-            and existing.content.get("operator") == new_asset.content.get("operator")
+        return self._hard_rule_target_signature(existing) == self._hard_rule_target_signature(new_asset)
+
+    def _hard_rule_target_signature(self, asset: ConfigAsset) -> tuple[str | None, str | None, str | None]:
+        condition = next(
+            (
+                item
+                for item in asset.content.get("conditions", [])
+                if isinstance(item, dict) and item.get("fact_key")
+            ),
+            {},
         )
+        fact_key = condition.get("fact_key") or asset.content.get("fact_key")
+        operator = condition.get("operator") or asset.content.get("operator")
+        contract_type = asset.applicability.get("contract_type")
+        return (str(contract_type) if contract_type else None, str(fact_key) if fact_key else None, str(operator) if operator else None)
+
+    def _find_threshold_condition(self, asset: ConfigAsset) -> float | None:
+        for condition in asset.content.get("conditions", []):
+            if condition.get("fact_key") == "payment.prepay_ratio" and condition.get("operator") == ">":
+                return float(condition.get("value"))
+        if asset.content.get("fact_key") == "payment.prepay_ratio" and asset.content.get("operator") == ">":
+            return float(asset.content.get("value"))
+        return None
 
 
 def asset_counts(profile: ReviewProfile) -> dict[str, int]:

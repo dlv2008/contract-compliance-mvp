@@ -423,19 +423,27 @@ class TaskRepository:
                 payload=payload,
                 content_type="text/markdown",
             )
-            task = analyze_contract(
+            initial_task = analyze_contract(
                 task_id=f"sample-{index:03d}",
                 source_filename=sample_path.name,
                 contract_name=sample_path.stem,
                 contract_text=payload.decode("utf-8"),
             )
-            profile = AssetRegistry().default_profile_for_contract_type(task.contract_type)
+            registry = AssetRegistry(self.settings)
+            profile = registry.default_profile_for_contract_type(initial_task.contract_type)
+            task = analyze_contract(
+                task_id=f"sample-{index:03d}",
+                source_filename=sample_path.name,
+                contract_name=sample_path.stem,
+                contract_text=payload.decode("utf-8"),
+                rule_context=registry.rule_context_for_profile(profile),
+            )
             task = self._apply_profile_snapshot(task, profile).model_copy(update={"stored_file": stored_file})
             tasks.append(task)
         return tasks
 
     def _resolve_profile(self, profile_id: str | None, *, require_profile: bool):
-        registry = AssetRegistry()
+        registry = AssetRegistry(self.settings)
         try:
             return registry.get_active_profile(profile_id)
         except AssetNotFoundError as exc:
@@ -444,7 +452,7 @@ class TaskRepository:
             return registry.get_active_profile("profile-basic-contract-review-v1")
 
     def _apply_profile_snapshot(self, task: TaskRecord, profile) -> TaskRecord:  # noqa: ANN001
-        registry = AssetRegistry()
+        registry = AssetRegistry(self.settings)
         return task.model_copy(
             update={
                 "selected_profile_id": profile.id,
@@ -456,7 +464,7 @@ class TaskRepository:
     def _ensure_profile_snapshot(self, task: TaskRecord) -> TaskRecord:
         if task.selected_profile_id and task.selected_profile_snapshot:
             return task
-        profile = AssetRegistry().default_profile_for_contract_type(task.contract_type)
+        profile = AssetRegistry(self.settings).default_profile_for_contract_type(task.contract_type)
         return self._apply_profile_snapshot(task, profile)
 
     def _load_existing_json_tasks(self) -> list[TaskRecord]:

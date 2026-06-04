@@ -661,199 +661,181 @@ def evaluate_rules(
     facts: dict[str, dict[str, Any]],
     rule_context: dict[str, Any] | None = None,
 ) -> list[RiskFinding]:
-    risks: list[RiskFinding] = []
     rule_context = rule_context or {}
-    prepay_threshold = float(rule_context.get("prepay_threshold") or 30)
-    prepay_threshold_asset_id = str(rule_context.get("prepay_threshold_asset_id") or "asset-hardrule-prepay-v1")
+    hard_rules = rule_context.get("hard_rules") or []
+    risks: list[RiskFinding] = []
 
-    invoice_type = fact_value(facts, "invoice.type")
-    tax_rate = fact_value(facts, "invoice.tax_rate")
-    prepay_ratio = parse_percent(fact_value(facts, "payment.prepay_ratio"))
-    acceptance_required = bool(fact_value(facts, "acceptance.required"))
-    payee_matches = fact_value(facts, "account.same_as_counterparty")
-    auto_renewal = bool(fact_value(facts, "term.auto_renewal"))
-    approval_required = bool(fact_value(facts, "approval.exception_required"))
-    warranty_present = bool(fact_value(facts, "warranty.present"))
-    dispute_raw = str(fact_value(facts, "dispute.raw") or "")
-    liability_reciprocal = fact_value(facts, "liability.reciprocal")
-
-    if not invoice_type:
-        rule_id = "FIN-PUR-001" if contract_type == "procurement_contract" else "FIN-SVC-001"
-        policy_ids = ["POLICY-PUR-001", "POLICY-FUND-002"] if contract_type == "procurement_contract" else ["POLICY-FUND-002"]
-        risks.append(
-            build_risk(
-                rule_id=rule_id,
-                title="缺失发票条款",
-                level="medium",
-                reason="合同文本中未发现明确发票类型、开票方式或开票要求，后续付款审核口径不完整。",
-                evidence_ids=[],
-                policy_ids=policy_ids,
-                action="补充发票类型、开票时点和发票内容，确保合同与付款资料一致。",
-            )
-        )
-
-    if invoice_type and not tax_rate:
-        rule_id = "FIN-PUR-002" if contract_type == "procurement_contract" else "FIN-SVC-002"
-        risks.append(
-            build_risk(
-                rule_id=rule_id,
-                title="缺失税率条款",
-                level="medium",
-                reason="合同提到了发票，但未写明税率或税点，税务处理和付款审核依据不足。",
-                evidence_ids=fact_evidence_ids(facts, "invoice.type"),
-                policy_ids=["POLICY-FUND-002"],
-                action="补充明确税率、发票类型及开票内容，避免后续开票与付款口径不一致。",
-            )
-        )
-
-    if prepay_ratio is not None and prepay_ratio > prepay_threshold:
-        if contract_type == "procurement_contract":
-            risks.append(
-                build_risk(
-                    rule_id="FIN-PUR-003",
-                    title="采购预付款比例超过 30%",
-                    level="high",
-                    reason=f"合同约定预付款比例为 {trim_number(str(prepay_ratio))}%，已超过采购管理制度建议阈值。",
-                    evidence_ids=fact_evidence_ids(facts, "payment.prepay_ratio"),
-                    policy_ids=["POLICY-PUR-002", "POLICY-FUND-006"],
-                    action="将预付款比例降至 30% 以内，或补充采购与财务的例外审批说明。",
-                )
-            )
-        elif acceptance_required:
-            risks.append(
-                build_risk(
-                    rule_id="FIN-SVC-004",
-                    title="高预付款且尾款依赖验收",
-                    level="high",
-                    reason=f"服务合同预付款比例为 {trim_number(str(prepay_ratio))}%，且尾款与交付/验收节点绑定，资金前置风险较高。",
-                    evidence_ids=merge_ids(
-                        fact_evidence_ids(facts, "payment.prepay_ratio"),
-                        fact_evidence_ids(facts, "acceptance.required"),
-                    ),
-                    policy_ids=["POLICY-FUND-003", "POLICY-FUND-004", "POLICY-FUND-006"],
-                    action="压低预付款比例，并增加阶段性交付与验收控制，必要时进入联合复核。",
-                )
-            )
-        else:
-            risks.append(
-                build_risk(
-                    rule_id="FIN-SVC-003",
-                    title="服务预付款比例超过 30%",
-                    level="medium",
-                    reason=f"服务合同预付款比例为 {trim_number(str(prepay_ratio))}%，已超过制度建议阈值。",
-                    evidence_ids=fact_evidence_ids(facts, "payment.prepay_ratio"),
-                    policy_ids=["POLICY-FUND-003"],
-                    action="建议补充例外审批依据，或将预付款比例调整至 30% 以内。",
-                )
-            )
-
-    if not acceptance_required:
-        rule_id = "FIN-PUR-004" if contract_type == "procurement_contract" else "FIN-SVC-005"
-        policy_ids = ["POLICY-PUR-003"] if contract_type == "procurement_contract" else ["POLICY-FUND-004"]
-        risks.append(
-            build_risk(
-                rule_id=rule_id,
-                title="缺失验收条款",
-                level="medium",
-                reason="合同中未发现明确验收、交付成果确认或到货验收安排，后续尾款支付依据不足。",
-                evidence_ids=[],
-                policy_ids=policy_ids,
-                action="补充明确的验收标准、验收主体和验收节点，避免以默认认可替代关键确认。",
-            )
-        )
-
-    if payee_matches is False:
-        rule_id = "FIN-PUR-005" if contract_type == "procurement_contract" else "FIN-SVC-009"
-        policy_ids = ["POLICY-FUND-005"]
-        if contract_type == "procurement_contract":
-            policy_ids.append("POLICY-PUR-005")
-        risks.append(
-            build_risk(
-                rule_id=rule_id,
-                title="收款账户主体与签约乙方不一致",
-                level="high",
-                reason="合同乙方与收款账户名称不一致，存在代收款、关联方收款或账户变更未留痕的风险。",
-                evidence_ids=fact_evidence_ids(facts, "account.same_as_counterparty"),
-                policy_ids=policy_ids,
-                action="要求提供专项审批和账户变更证明，或改回与签约主体一致的收款账户。",
-            )
-        )
-
-    if auto_renewal and not approval_required:
-        rule_id = "FIN-PUR-007" if contract_type == "procurement_contract" else "FIN-SVC-006"
-        policy_ids = ["POLICY-REV-004"]
-        if contract_type == "procurement_contract":
-            policy_ids.append("POLICY-PUR-006")
-        risks.append(
-            build_risk(
-                rule_id=rule_id,
-                title="自动续约缺少审批前提",
-                level="high",
-                reason="合同包含自动续约或默认顺延安排，但未看到重新审批、书面续签或授权边界控制。",
-                evidence_ids=fact_evidence_ids(facts, "term.auto_renewal"),
-                policy_ids=policy_ids,
-                action="改为到期后重新审批并签署书面续约文件，不建议使用默认自动顺延。",
-            )
-        )
-
-    if contract_type == "service_contract" and dispute_raw and "乙方所在地" in dispute_raw:
-        risks.append(
-            build_risk(
-                rule_id="FIN-SVC-007",
-                title="争议解决地约定偏向乙方",
-                level="medium",
-                reason="争议解决条款将仲裁或诉讼安排在乙方所在地，后续维权和举证成本偏高。",
-                evidence_ids=fact_evidence_ids(facts, "dispute.location"),
-                policy_ids=["POLICY-REV-005"],
-                action="建议改为甲方所在地法院或双方均可接受的争议解决地。",
-            )
-        )
-
-    if contract_type == "service_contract" and liability_reciprocal is False:
-        risks.append(
-            build_risk(
-                rule_id="FIN-SVC-008",
-                title="违约责任明显不对等",
-                level="high",
-                reason="合同对乙方责任设置了明显上限，但对甲方迟延付款责任扩张至全部损失和预期收益，责任分配失衡。",
-                evidence_ids=fact_evidence_ids(facts, "liability.reciprocal"),
-                policy_ids=["POLICY-REV-001"],
-                action="将双方违约责任调整为对等口径，并统一责任边界或赔偿上限。",
-            )
-        )
-
-    if contract_type == "procurement_contract" and not warranty_present:
-        risks.append(
-            build_risk(
-                rule_id="FIN-PUR-006",
-                title="缺失质保或保修条款",
-                level="medium",
-                reason="采购合同中未看到明确质保期限、保修责任或售后承诺，后续设备问题缺少追责抓手。",
-                evidence_ids=[],
-                policy_ids=["POLICY-PUR-004"],
-                action="补充质保期限、保修范围、响应时限与更换维修责任。",
-            )
-        )
+    for rule in hard_rules:
+        risk = evaluate_hard_rule(rule, contract_type, facts)
+        if risk is not None:
+            risks.append(risk)
 
     risks.sort(key=lambda item: risk_priority(item.level), reverse=True)
-    prepay_rule_ids = {"FIN-PUR-003", "FIN-SVC-003", "FIN-SVC-004"}
-    annotated_risks = []
-    for risk in risks:
-        if risk.rule_id in prepay_rule_ids:
-            threshold_text = trim_number(str(prepay_threshold))
-            annotated_risks.append(
-                risk.model_copy(
-                    update={
-                        "reason": (
-                            f"{risk.reason} 配置来源：{prepay_threshold_asset_id}，"
-                            f"当前阈值 {threshold_text}%."
-                        )
-                    }
-                )
-            )
-        else:
-            annotated_risks.append(risk)
-    return annotated_risks
+    return risks
+
+
+def evaluate_hard_rule(
+    rule: dict[str, Any],
+    contract_type: str,
+    facts: dict[str, dict[str, Any]],
+) -> RiskFinding | None:
+    if not hard_rule_matches_contract_type(rule, contract_type):
+        return None
+
+    conditions = hard_rule_conditions(rule)
+    if not conditions or not all(condition_matches(condition, facts) for condition in conditions):
+        return None
+
+    evidence_ids: list[str] = []
+    for fact_key in rule.get("evidence_fact_keys", []):
+        evidence_ids = merge_ids(evidence_ids, fact_evidence_ids(facts, str(fact_key)))
+
+    rule_id = str(rule.get("rule_id") or rule.get("asset_id") or "RULE-UNKNOWN")
+    return build_risk(
+        rule_id=rule_id,
+        title=render_rule_template(str(rule.get("title") or rule_id), rule, facts),
+        level=str(rule.get("level") or rule.get("risk_level") or "medium"),
+        reason=render_rule_template(
+            str(rule.get("reason_template") or rule.get("reason") or "\u89c4\u5219\u547d\u4e2d\u3002"),
+            rule,
+            facts,
+        ),
+        evidence_ids=evidence_ids,
+        policy_ids=normalize_policy_ids(rule.get("policy_reference_ids") or rule.get("policy_reference") or []),
+        action=render_rule_template(
+            str(rule.get("action_template") or rule.get("action") or "\u8bf7\u4eba\u5de5\u590d\u6838\u3002"),
+            rule,
+            facts,
+        ),
+    )
+
+
+def hard_rule_matches_contract_type(rule: dict[str, Any], contract_type: str) -> bool:
+    applicability = rule.get("applicability")
+    if isinstance(applicability, dict):
+        expected = applicability.get("contract_type")
+        if expected and expected != contract_type:
+            return False
+    expected = rule.get("contract_type")
+    return not expected or expected == contract_type
+
+
+def hard_rule_conditions(rule: dict[str, Any]) -> list[dict[str, Any]]:
+    conditions = rule.get("conditions")
+    if isinstance(conditions, list) and conditions:
+        return [condition for condition in conditions if isinstance(condition, dict)]
+    fact_key = rule.get("fact_key")
+    if fact_key:
+        return [
+            {
+                "fact_key": fact_key,
+                "operator": rule.get("operator") or "is",
+                "value": rule.get("value"),
+            }
+        ]
+    return []
+
+
+def condition_matches(condition: dict[str, Any], facts: dict[str, dict[str, Any]]) -> bool:
+    fact_key = str(condition.get("fact_key") or "")
+    operator = str(condition.get("operator") or "is").lower()
+    expected = condition.get("value")
+    actual = fact_value(facts, fact_key)
+    status = fact_status(facts, fact_key)
+
+    if operator == "missing":
+        return status == "missing" or actual is None or actual == ""
+    if operator == "present":
+        return status != "missing" and actual is not None and actual != ""
+    if operator in {">", ">=", "<", "<=", "==", "!="}:
+        actual_number = coerce_number(actual)
+        expected_number = coerce_number(expected)
+        if actual_number is None or expected_number is None:
+            return False
+        return compare_number(actual_number, expected_number, operator)
+    if operator == "is":
+        return normalize_rule_value(actual) == normalize_rule_value(expected)
+    if operator == "is_not":
+        return normalize_rule_value(actual) != normalize_rule_value(expected)
+    if operator == "contains":
+        return expected is not None and str(expected) in str(actual or "")
+    if operator == "not_contains":
+        return expected is not None and str(expected) not in str(actual or "")
+    return False
+
+
+def coerce_number(value: Any) -> float | None:
+    if value is None or value == "":
+        return None
+    if isinstance(value, bool):
+        return 1.0 if value else 0.0
+    if isinstance(value, int | float):
+        return float(value)
+    match = re.search(r"-?\d+(?:\.\d+)?", str(value).replace(",", ""))
+    if not match:
+        return None
+    return float(match.group(0))
+
+
+def compare_number(actual: float, expected: float, operator: str) -> bool:
+    if operator == ">":
+        return actual > expected
+    if operator == ">=":
+        return actual >= expected
+    if operator == "<":
+        return actual < expected
+    if operator == "<=":
+        return actual <= expected
+    if operator == "==":
+        return actual == expected
+    if operator == "!=":
+        return actual != expected
+    return False
+
+
+def normalize_rule_value(value: Any) -> Any:
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"true", "yes", "1"}:
+            return True
+        if lowered in {"false", "no", "0"}:
+            return False
+        return value.strip()
+    return value
+
+
+def render_rule_template(template: str, rule: dict[str, Any], facts: dict[str, dict[str, Any]]) -> str:
+    def replace(match: re.Match[str]) -> str:
+        key = match.group(1)
+        if key == "asset_id":
+            return str(rule.get("asset_id") or "")
+        if key == "threshold":
+            return rule_threshold_text(rule)
+        if key in facts:
+            value = fact_value(facts, key)
+            return format_field_value(value)
+        if key in rule:
+            return str(rule[key])
+        return match.group(0)
+
+    return re.sub(r"\{([^{}]+)\}", replace, template)
+
+
+def rule_threshold_text(rule: dict[str, Any]) -> str:
+    for condition in hard_rule_conditions(rule):
+        if condition.get("fact_key") == "payment.prepay_ratio" and condition.get("value") is not None:
+            number = coerce_number(condition.get("value"))
+            return trim_number(str(number)) if number is not None else str(condition.get("value"))
+    number = coerce_number(rule.get("value"))
+    return trim_number(str(number)) if number is not None else ""
+
+
+def normalize_policy_ids(value: Any) -> list[str]:
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, list):
+        return [str(item) for item in value]
+    return []
 
 
 def build_risk(
@@ -865,6 +847,7 @@ def build_risk(
     policy_ids: list[str],
     action: str,
 ) -> RiskFinding:
+    policy_reference_ids = merge_ids(policy_ids, ["POLICY-REV-003"])
     return RiskFinding(
         rule_id=rule_id,
         title=title,
@@ -872,7 +855,7 @@ def build_risk(
         message=title,
         reason=reason,
         evidence_clause_ids=evidence_ids,
-        policy_reference_ids=policy_ids + ["POLICY-REV-003"],
+        policy_reference_ids=policy_reference_ids,
         action=action,
     )
 

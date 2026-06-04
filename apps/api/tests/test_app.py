@@ -102,7 +102,7 @@ def test_asset_management_closes_profile_usage_loop(client: TestClient) -> None:
         json={"asset_id": active_asset["id"], "binding_reason": "threshold policy update"},
     )
     assert bind_response.status_code == 200
-    assert bind_response.json()["asset_counts"]["hard_rule"] == 2
+    assert bind_response.json()["asset_counts"]["hard_rule"] == 7
 
     profile_publish_response = client.post(
         f"/api/review-profiles/{draft_profile['id']}/publish",
