@@ -11,6 +11,8 @@
         <span>资产 <strong>{{ data.asset_refs | length }}</strong></span>
         <span>硬规则 <strong>{{ data.asset_counts.hard_rule or 0 }}</strong></span>
         <span>语义规则 <strong>{{ data.asset_counts.semantic_rule or 0 }}</strong></span>
+        <span>已接入 <strong>{{ data.execution_audit.summary.get("implemented", 0) }}</strong></span>
+        <span>部分接入 <strong>{{ data.execution_audit.summary.get("partially_implemented", 0) }}</strong></span>
     </div>
 </section>
 
@@ -27,10 +29,16 @@
             </div>
             <a class="button-secondary" href="/assets">返回资产工作台</a>
         </div>
+        <div class="execution-summary">
+            <span class="execution-badge tone-ok">已接入执行 {{ data.execution_audit.summary.get("implemented", 0) }}</span>
+            <span class="execution-badge tone-muted">部分接入 {{ data.execution_audit.summary.get("partially_implemented", 0) }}</span>
+            <span class="execution-badge tone-muted">未接入 {{ data.execution_audit.summary.get("planned", 0) }}</span>
+        </div>
         <div class="asset-list">
             {% for item in data.asset_refs %}
             {% set asset = item.asset %}
             {% set ref = item.ref %}
+            {% set execution_status = item.execution_status %}
             <article class="asset-card">
                 <div class="asset-card-main">
                     <div class="asset-card-title">
@@ -38,11 +46,13 @@
                         <strong>{{ asset.name }}</strong>
                         <span class="pill">v{{ ref.asset_version }}</span>
                         <span class="status-badge status-{{ asset.status }}">{{ asset.status }}</span>
+                        <span class="execution-badge tone-{{ execution_status.tone }}">{{ execution_status.label }}</span>
                     </div>
                     <p>{{ asset.description }}</p>
                     <dl class="compact-dl">
                         <div><dt>资产 ID</dt><dd>{{ asset.id }}</dd></div>
                         <div><dt>绑定说明</dt><dd>{{ ref.binding_reason or "未填写。" }}</dd></div>
+                        <div><dt>执行状态</dt><dd>{{ execution_status.summary }}</dd></div>
                         <div><dt>内容</dt><dd>{{ asset.content }}</dd></div>
                     </dl>
                 </div>

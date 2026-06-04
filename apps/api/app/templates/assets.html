@@ -11,12 +11,39 @@
         <span>Active 资产 <strong>{{ data.summary.active_assets }}</strong></span>
         <span>草稿 <strong>{{ data.summary.draft_assets }}</strong></span>
         <span>待发布 <strong>{{ data.summary.approved_assets }}</strong></span>
+        <span>已接入 <strong>{{ data.summary.execution_audit.get("implemented", 0) }}</strong></span>
+        <span>部分接入 <strong>{{ data.summary.execution_audit.get("partially_implemented", 0) }}</strong></span>
     </div>
 </section>
 
 {% if data.error %}
 <section class="notice notice-danger">{{ data.error }}</section>
 {% endif %}
+
+<section class="panel execution-panel">
+    <div class="panel-head">
+        <div>
+            <h3>资产执行状态审计</h3>
+            <p class="panel-subtitle">区分“可管理/可绑定”与“真正影响合同审查”，避免把规划中的资产误解为已生效规则。</p>
+        </div>
+    </div>
+    <div class="execution-grid">
+        {% for item in data.execution_audit["items"] %}
+        <article class="execution-item execution-{{ item.status }}">
+            <div class="execution-title">
+                <strong>{{ item.asset_type }}</strong>
+                <span class="execution-badge tone-{{ item.tone }}">{{ item.label }}</span>
+            </div>
+            <p>{{ item.summary }}</p>
+            <div class="execution-meta">
+                <span>Active {{ item.active_assets }}</span>
+                <span>绑定配置集 {{ item.bound_profile_count }}</span>
+            </div>
+            <p class="panel-note">{{ item.next_step }}</p>
+        </article>
+        {% endfor %}
+    </div>
+</section>
 
 <section class="asset-layout">
     <article class="panel">
@@ -54,11 +81,13 @@
                         <strong>{{ asset.name }}</strong>
                         <span class="pill">v{{ asset.version }}</span>
                         <span class="status-badge status-{{ asset.status }}">{{ asset.status }}</span>
+                        <span class="execution-badge tone-{{ asset.execution_status.tone }}">{{ asset.execution_status.label }}</span>
                     </div>
                     <p>{{ asset.description or "未填写说明。" }}</p>
                     <dl class="compact-dl">
                         <div><dt>ID</dt><dd>{{ asset.id }}</dd></div>
                         <div><dt>适用性</dt><dd>{{ asset.applicability }}</dd></div>
+                        <div><dt>执行状态</dt><dd>{{ asset.execution_status.summary }}</dd></div>
                         <div><dt>内容</dt><dd>{{ asset.content }}</dd></div>
                     </dl>
                 </div>

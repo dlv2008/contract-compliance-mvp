@@ -102,17 +102,38 @@ def list_review_profiles(status: str | None = "active", contract_type: str | Non
 
 @router.get("/assets")
 def list_assets(asset_type: str | None = None, status: str | None = None, q: str | None = None) -> dict:
-    assets = AssetRegistry().list_assets(asset_type=asset_type, status=status, q=q)
-    return {"items": [asset.model_dump() for asset in assets], "total": len(assets)}
+    registry = AssetRegistry()
+    assets = registry.list_assets(asset_type=asset_type, status=status, q=q)
+    return {
+        "items": [
+            {
+                **asset.model_dump(),
+                "execution_status": registry.execution_status_for_asset_type(asset.asset_type),
+            }
+            for asset in assets
+        ],
+        "total": len(assets),
+    }
+
+
+@router.get("/assets/execution-audit")
+def asset_execution_audit() -> dict:
+    return AssetRegistry().asset_execution_audit()
 
 
 @router.get("/assets/{asset_id}")
 def get_asset(asset_id: str) -> dict:
+    registry = AssetRegistry()
     try:
-        asset = AssetRegistry().get_asset(asset_id)
+        asset = registry.get_asset(asset_id)
     except AssetNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-    return {"asset": asset.model_dump()}
+    return {
+        "asset": {
+            **asset.model_dump(),
+            "execution_status": registry.execution_status_for_asset_type(asset.asset_type),
+        }
+    }
 
 
 @router.post("/assets", status_code=201)
@@ -200,7 +221,12 @@ def get_review_profile(profile_id: str) -> dict:
         except AssetNotFoundError:
             continue
         assets.append({"ref": ref.model_dump(), "asset": asset.model_dump()})
-    return {"profile": profile.model_dump(), "assets": assets, "asset_counts": asset_counts(profile)}
+    return {
+        "profile": profile.model_dump(),
+        "assets": assets,
+        "asset_counts": asset_counts(profile),
+        "execution_audit": registry.profile_execution_audit(profile),
+    }
 
 
 @router.post("/review-profiles/{profile_id}/versions", status_code=201)
@@ -436,4 +462,3 @@ def _ensure_task_exists(repository: TaskRepository, task_id: str) -> None:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     if task is None:
         raise HTTPException(status_code=404, detail="Task does not exist.")
-

@@ -27,6 +27,79 @@ SINGLETON_ASSET_TYPES = {
     "report_template",
 }
 
+ASSET_EXECUTION_STATUS = {
+    "clause_parse_template": {
+        "status": "partially_implemented",
+        "label": "部分接入",
+        "tone": "muted",
+        "summary": "资产可维护、可绑定并会进入配置快照；但条款解析仍使用 review_engine.py 中的固定正则和段落降级逻辑。",
+        "next_step": "Step 6：条款解析模板资产执行。",
+    },
+    "extraction_schema": {
+        "status": "partially_implemented",
+        "label": "部分接入",
+        "tone": "muted",
+        "summary": "资产可维护、可绑定并会进入配置快照；但字段抽取仍由代码内置关键字和正则完成。",
+        "next_step": "Step 7：字段 Schema 和静态提取规则资产执行。",
+    },
+    "extraction_rule": {
+        "status": "planned",
+        "label": "未接入执行",
+        "tone": "muted",
+        "summary": "资产类型已预留，当前没有执行器读取 extraction_rule。",
+        "next_step": "Step 7：字段 Schema 和静态提取规则资产执行。",
+    },
+    "hard_rule": {
+        "status": "implemented",
+        "label": "已接入执行",
+        "tone": "ok",
+        "summary": "配置集绑定的 active hard_rule 会进入 rule_context，并由 review_engine.evaluate_hard_rule() 执行。",
+        "next_step": "Step 9：hard_rule DSL 升级。",
+    },
+    "semantic_rule": {
+        "status": "partially_implemented",
+        "label": "部分接入",
+        "tone": "muted",
+        "summary": "资产可维护、可绑定并会进入配置快照；但 semantic_rule LLM Runner 尚未实现。",
+        "next_step": "Step 10：semantic_rule LLM Runner。",
+    },
+    "risk_evaluation_policy": {
+        "status": "partially_implemented",
+        "label": "部分接入",
+        "tone": "muted",
+        "summary": "资产可维护、可绑定并会进入配置快照；但 overall risk、status 和 decision 仍由 review_engine.py 中的代码派生。",
+        "next_step": "Step 12：risk policy、message template、report template 资产执行。",
+    },
+    "risk_message_template": {
+        "status": "partially_implemented",
+        "label": "部分接入",
+        "tone": "muted",
+        "summary": "资产可维护、可绑定并会进入配置快照；但风险提示目前来自 hard_rule 模板和代码渲染，通用 message template 尚未接管。",
+        "next_step": "Step 12：risk policy、message template、report template 资产执行。",
+    },
+    "report_template": {
+        "status": "partially_implemented",
+        "label": "部分接入",
+        "tone": "muted",
+        "summary": "资产可维护、可绑定并会进入配置快照；但报告章节和 Markdown 输出仍由代码模板生成。",
+        "next_step": "Step 12：risk policy、message template、report template 资产执行。",
+    },
+    "prompt_template": {
+        "status": "partially_implemented",
+        "label": "部分接入",
+        "tone": "muted",
+        "summary": "资产可维护、可绑定并会进入配置快照；但 LLM 草稿生成和语义判断尚未读取 prompt_template 资产。",
+        "next_step": "Step 4：LLM 草稿生成 v1，替换 mock generate_rule_drafts。",
+    },
+    "seed_profile": {
+        "status": "planned",
+        "label": "非执行资产",
+        "tone": "muted",
+        "summary": "seed_profile 仅用于资产类型兼容展示，不直接参与审查执行。",
+        "next_step": "后续可移除或改为初始化脚本概念。",
+    },
+}
+
 
 class AssetNotFoundError(ValueError):
     pass
@@ -968,6 +1041,70 @@ class AssetRegistry:
             "hard_rules": hard_rules,
         }
 
+    def execution_status_for_asset_type(self, asset_type: str) -> dict[str, str]:
+        status = ASSET_EXECUTION_STATUS.get(
+            asset_type,
+            {
+                "status": "planned",
+                "label": "未接入执行",
+                "tone": "muted",
+                "summary": "该资产类型尚未定义执行器。",
+                "next_step": "待后续设计确认。",
+            },
+        )
+        return {"asset_type": asset_type, **status}
+
+    def asset_execution_audit(self) -> dict[str, Any]:
+        assets, profiles = self._load_state()
+        profile_refs_by_type: dict[str, set[str]] = {}
+        for profile in profiles:
+            for ref in profile.assets:
+                profile_refs_by_type.setdefault(ref.asset_type, set()).add(profile.id)
+
+        items = []
+        for asset_type in self.asset_types():
+            typed_assets = [asset for asset in assets if asset.asset_type == asset_type]
+            active_assets = [asset for asset in typed_assets if asset.status == "active"]
+            status = self.execution_status_for_asset_type(asset_type)
+            items.append(
+                {
+                    **status,
+                    "total_assets": len(typed_assets),
+                    "active_assets": len(active_assets),
+                    "bound_profile_count": len(profile_refs_by_type.get(asset_type, set())),
+                    "bound_profile_ids": sorted(profile_refs_by_type.get(asset_type, set())),
+                }
+            )
+
+        summary: dict[str, int] = {}
+        for item in items:
+            summary[item["status"]] = summary.get(item["status"], 0) + 1
+        return {"items": items, "summary": summary}
+
+    def profile_execution_audit(self, profile: ReviewProfile) -> dict[str, Any]:
+        assets, _ = self._load_state()
+        assets_by_id = {asset.id: asset for asset in assets}
+        items = []
+        for ref in profile.assets:
+            asset = assets_by_id.get(ref.asset_id)
+            status = self.execution_status_for_asset_type(ref.asset_type)
+            items.append(
+                {
+                    **status,
+                    "asset_id": ref.asset_id,
+                    "asset_name": asset.name if asset else ref.asset_id,
+                    "asset_status": asset.status if asset else "missing",
+                    "asset_version": ref.asset_version,
+                    "required": ref.required,
+                    "binding_reason": ref.binding_reason,
+                }
+            )
+
+        summary: dict[str, int] = {}
+        for item in items:
+            summary[item["status"]] = summary.get(item["status"], 0) + 1
+        return {"items": items, "summary": summary}
+
     def summary(self) -> dict:
         active_profiles = self.list_profiles(status="active")
         active_assets = self.list_assets(status="active")
@@ -978,6 +1115,7 @@ class AssetRegistry:
             "active_assets": len(active_assets),
             "draft_assets": len(draft_assets),
             "approved_assets": len(approved_assets),
+            "execution_audit": self.asset_execution_audit()["summary"],
         }
 
     def asset_types(self) -> list[str]:

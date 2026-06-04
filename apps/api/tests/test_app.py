@@ -61,6 +61,25 @@ def test_review_profiles_and_assets_are_seeded(client: TestClient) -> None:
     assert any(item["id"] == "profile-procurement-basic-v1" for item in profiles)
     assert any(item["asset_type"] == "hard_rule" for item in assets)
     assert any(item["asset_type"] == "report_template" for item in assets)
+    assert all("execution_status" in item for item in assets)
+
+
+def test_asset_execution_audit_reports_real_runtime_coverage(client: TestClient) -> None:
+    audit_response = client.get("/api/assets/execution-audit")
+    profile_response = client.get("/api/review-profiles/profile-procurement-basic-v1")
+
+    assert audit_response.status_code == 200
+    assert profile_response.status_code == 200
+
+    audit_items = {item["asset_type"]: item for item in audit_response.json()["items"]}
+    assert audit_items["hard_rule"]["status"] == "implemented"
+    assert audit_items["hard_rule"]["active_assets"] >= 1
+    assert audit_items["extraction_schema"]["status"] == "partially_implemented"
+    assert audit_items["semantic_rule"]["status"] == "partially_implemented"
+
+    profile_audit = profile_response.json()["execution_audit"]
+    assert profile_audit["summary"]["implemented"] >= 1
+    assert any(item["asset_type"] == "hard_rule" for item in profile_audit["items"])
 
 
 def test_asset_management_closes_profile_usage_loop(client: TestClient) -> None:
@@ -364,8 +383,11 @@ def test_asset_workbench_pages_render(client: TestClient) -> None:
     assert drafts_response.status_code == 200
     assert profile_response.status_code == 200
     assert "/rule-drafts" in assets_response.text
+    assert "资产执行状态审计" in assets_response.text
+    assert "已接入执行" in assets_response.text
     assert "/assets" in drafts_response.text
     assert "profile-procurement-basic-v1" in profile_response.text
+    assert "执行状态" in profile_response.text
 
 
 def test_manual_llm_check_returns_probe_result(

@@ -47,9 +47,16 @@ def _asset_workbench_data(
     assets = registry.list_assets(asset_type=asset_type or None, status=status or None, q=q or None)
     profiles = registry.list_profiles(status=None)
     return {
-        "assets": [asset.model_dump() for asset in assets],
+        "assets": [
+            {
+                **asset.model_dump(),
+                "execution_status": registry.execution_status_for_asset_type(asset.asset_type),
+            }
+            for asset in assets
+        ],
         "profiles": [profile.model_dump() for profile in profiles],
         "summary": registry.summary(),
+        "execution_audit": registry.asset_execution_audit(),
         "asset_types": registry.asset_types(),
         "selected_asset_type": asset_type or "",
         "selected_status": status or "",
@@ -67,11 +74,18 @@ def _profile_detail_data(profile_id: str, *, error: str | None = None) -> dict:
             asset = registry.get_asset(ref.asset_id)
         except AssetNotFoundError:
             continue
-        refs.append({"ref": ref.model_dump(), "asset": asset.model_dump()})
+        refs.append(
+            {
+                "ref": ref.model_dump(),
+                "asset": asset.model_dump(),
+                "execution_status": registry.execution_status_for_asset_type(asset.asset_type),
+            }
+        )
     return {
         "profile": profile.model_dump(),
         "asset_refs": refs,
         "asset_counts": asset_counts(profile),
+        "execution_audit": registry.profile_execution_audit(profile),
         "active_assets": [asset.model_dump() for asset in registry.list_assets(status="active")],
         "error": error,
     }
