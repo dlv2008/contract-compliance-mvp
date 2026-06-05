@@ -64,6 +64,57 @@
             </div>
             {% endfor %}
         </div>
+        {% if data.selected_dry_run %}
+        {% set dry = data.selected_dry_run %}
+        {% set snapshot = dry.task_snapshot %}
+        <div class="panel-spacer"></div>
+        <section class="dry-run-result">
+            <div class="panel-head">
+                <div>
+                    <h3>配置集试运行结果</h3>
+                    <p class="panel-subtitle">{{ dry.contract_name }} · {{ dry.created_at }}</p>
+                </div>
+                <span class="status-badge status-{{ dry.status }}">{{ dry.status_label }}</span>
+            </div>
+            <div class="dry-run-metrics">
+                <span>总风险 <strong>{{ dry.risk_count }}</strong></span>
+                <span>高风险 <strong>{{ dry.high_risk_count }}</strong></span>
+                <span>中风险 <strong>{{ dry.medium_risk_count }}</strong></span>
+                <span>语义命中 <strong>{{ dry.semantic_hit_count }}</strong></span>
+                <span>Warning <strong>{{ dry.warning_count }}</strong></span>
+            </div>
+            <div class="dry-run-grid">
+                <article>
+                    <h4>字段预览</h4>
+                    <dl class="compact-dl">
+                        {% for field in snapshot.extracted_fields[:6] %}
+                        <div><dt>{{ field.label }}</dt><dd>{{ field.value }}</dd></div>
+                        {% endfor %}
+                    </dl>
+                </article>
+                <article>
+                    <h4>风险预览</h4>
+                    {% if snapshot.risks %}
+                    <ul class="simple-list">
+                        {% for risk in snapshot.risks[:5] %}
+                        <li>{{ risk.rule_id }} · {{ risk.level }} · {{ risk.title }}</li>
+                        {% endfor %}
+                    </ul>
+                    {% else %}
+                    <p class="panel-subtitle">未命中风险。</p>
+                    {% endif %}
+                </article>
+                <article>
+                    <h4>Workflow Trace</h4>
+                    <ul class="simple-list">
+                        {% for event in snapshot.agent_trace[-4:] %}
+                        <li>{{ event.type }} · {{ event.message }}</li>
+                        {% endfor %}
+                    </ul>
+                </article>
+            </div>
+        </section>
+        {% endif %}
     </article>
 
     <aside class="panel">
@@ -108,6 +159,31 @@
             <button class="button-primary" type="submit">发布配置集版本</button>
         </form>
         {% endif %}
+
+        <div class="panel-spacer"></div>
+        <div class="panel-head">
+            <h3>发布前试运行</h3>
+        </div>
+        {% if data.latest_dry_run %}
+        <div class="dry-run-latest">
+            <strong>最近一次：{{ data.latest_dry_run.status_label }}</strong>
+            <span>{{ data.latest_dry_run.created_at }}</span>
+            <span>风险 {{ data.latest_dry_run.risk_count }} · 高风险 {{ data.latest_dry_run.high_risk_count }}</span>
+        </div>
+        {% else %}
+        <p class="panel-subtitle">尚未试运行。发布前建议粘贴一份代表性样本合同验证风险变化。</p>
+        {% endif %}
+        <form class="upload-form" action="/review-profiles/{{ data.profile.id }}/dry-run" method="post">
+            <label class="form-row">
+                <span>样本合同名称</span>
+                <input class="input" name="contract_name" placeholder="例如：采购样本 C 试运行" />
+            </label>
+            <label class="form-row">
+                <span>样本合同文本</span>
+                <textarea class="input textarea" name="source_text" rows="8" placeholder="粘贴样本合同全文。试运行不会创建正式任务。" required></textarea>
+            </label>
+            <button class="button-secondary" type="submit">运行 dry-run</button>
+        </form>
 
         <div class="panel-spacer"></div>
         <div class="panel-head">

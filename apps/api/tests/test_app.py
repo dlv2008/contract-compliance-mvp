@@ -388,6 +388,60 @@ def test_policy_reference_titles_prefer_profile_snapshot() -> None:
     assert payload["risks"][0]["source"] == "hard_rule"
 
 
+def test_profile_dry_run_api_does_not_create_task(client: TestClient) -> None:
+    before_total = client.get("/api/tasks").json()["total"]
+    sample_dir = next(path for path in (REPO_ROOT / "resource").iterdir() if path.name.startswith("01_"))
+    sample_path = sorted(path for path in sample_dir.iterdir() if "B-" in path.name)[-1]
+    sample_text = sample_path.read_text(encoding="utf-8")
+
+    response = client.post(
+        "/api/review-profiles/profile-procurement-basic-v1/dry-run",
+        json={
+            "contract_name": "dry-run procurement sample",
+            "source_filename": "sample-b.md",
+            "source_text": sample_text,
+        },
+    )
+
+    assert response.status_code == 201
+    dry_run = response.json()["dry_run"]
+    assert dry_run["id"].startswith("dry-run-")
+    assert dry_run["profile_id"] == "profile-procurement-basic-v1"
+    assert dry_run["risk_count"] >= 1
+    assert "task_snapshot" in dry_run
+    assert dry_run["task_snapshot"]["id"] == dry_run["id"]
+    assert client.get("/api/tasks").json()["total"] == before_total
+
+    list_response = client.get("/api/review-profiles/profile-procurement-basic-v1/dry-runs")
+    assert list_response.status_code == 200
+    assert list_response.json()["total"] == 1
+    assert list_response.json()["items"][0]["id"] == dry_run["id"]
+
+
+def test_profile_page_runs_dry_run_and_displays_result(client: TestClient) -> None:
+    sample_dir = next(path for path in (REPO_ROOT / "resource").iterdir() if path.name.startswith("01_"))
+    sample_path = sorted(path for path in sample_dir.iterdir() if "B-" in path.name)[-1]
+    sample_text = sample_path.read_text(encoding="utf-8")
+
+    response = client.post(
+        "/review-profiles/profile-procurement-basic-v1/dry-run",
+        data={
+            "contract_name": "profile page dry-run sample",
+            "source_text": sample_text,
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert "dry_run_id=dry-run-" in response.headers["location"]
+
+    page_response = client.get(response.headers["location"])
+    assert page_response.status_code == 200
+    assert "配置集试运行结果" in page_response.text
+    assert "发布前试运行" in page_response.text
+    assert "profile page dry-run sample" in page_response.text
+
+
 def test_asset_draft_editor_updates_and_validates_hard_rule(client: TestClient) -> None:
     draft_response = client.post(
         "/api/rule-drafts/generate",

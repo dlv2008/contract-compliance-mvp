@@ -8,6 +8,7 @@ from app.services.assets import AssetNotFoundError, AssetRegistry, AssetStateErr
 from app.services.db_store import DatabaseProbeClient
 from app.services.llm import LLMClient
 from app.services.object_store import ObjectStore
+from app.services.profile_dry_run import ProfileDryRunError, ProfileDryRunService
 from app.services.ragflow import RagflowClient
 from app.services.review_engine import build_review_payload, build_task_summary
 from app.services.storage import ContractUploadError, TaskRepository, TaskStorageError
@@ -97,6 +98,13 @@ class BindProfileAssetRequest(BaseModel):
 class PublishProfileRequest(BaseModel):
     actor: str = "reviewer"
     comment: str | None = None
+
+
+class ProfileDryRunRequest(BaseModel):
+    contract_name: str | None = None
+    source_filename: str = "dry-run.txt"
+    source_text: str
+    actor: str = "reviewer"
 
 
 @router.get("/tasks")
@@ -389,6 +397,27 @@ def publish_review_profile(profile_id: str, payload: PublishProfileRequest) -> d
     except AssetStateError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"profile": profile.model_dump(), "asset_counts": asset_counts(profile)}
+
+
+@router.get("/review-profiles/{profile_id}/dry-runs")
+def list_review_profile_dry_runs(profile_id: str) -> dict:
+    records = ProfileDryRunService().list_records(profile_id)
+    return {"items": [record.model_dump() for record in records], "total": len(records)}
+
+
+@router.post("/review-profiles/{profile_id}/dry-run", status_code=201)
+def run_review_profile_dry_run(profile_id: str, payload: ProfileDryRunRequest) -> JSONResponse:
+    try:
+        record = ProfileDryRunService().run(
+            profile_id,
+            contract_name=payload.contract_name,
+            source_filename=payload.source_filename,
+            source_text=payload.source_text,
+            actor=payload.actor,
+        )
+    except ProfileDryRunError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return JSONResponse(status_code=201, content={"dry_run": record.model_dump()})
 
 
 @router.post("/tasks", status_code=201)

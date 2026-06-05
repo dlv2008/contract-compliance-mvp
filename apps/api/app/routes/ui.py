@@ -9,6 +9,7 @@ from app.services.assets import AssetNotFoundError, AssetRegistry, AssetStateErr
 from app.services.db_store import DatabaseProbeClient
 from app.services.llm import LLMClient
 from app.services.object_store import ObjectStore
+from app.services.profile_dry_run import ProfileDryRunError, ProfileDryRunService
 from app.services.ragflow import RagflowClient
 from app.services.review_engine import build_dashboard_payload, build_review_payload
 from app.services.storage import ContractUploadError, TaskRepository, TaskStorageError
@@ -66,9 +67,24 @@ def _asset_workbench_data(
     }
 
 
-def _profile_detail_data(profile_id: str, *, error: str | None = None) -> dict:
+def _profile_detail_data(
+    profile_id: str,
+    *,
+    error: str | None = None,
+    dry_run_id: str | None = None,
+) -> dict:
     registry = AssetRegistry()
     profile = registry.get_profile(profile_id)
+    dry_run_service = ProfileDryRunService(registry=registry)
+    dry_runs = dry_run_service.list_records(profile_id, limit=5)
+    selected_dry_run = None
+    if dry_run_id:
+        try:
+            selected_dry_run = dry_run_service.get_record(dry_run_id)
+        except ProfileDryRunError:
+            selected_dry_run = None
+    if selected_dry_run is None and dry_runs:
+        selected_dry_run = dry_runs[0]
     refs = []
     for ref in profile.assets:
         try:
@@ -88,6 +104,9 @@ def _profile_detail_data(profile_id: str, *, error: str | None = None) -> dict:
         "asset_counts": asset_counts(profile),
         "execution_audit": registry.profile_execution_audit(profile),
         "active_assets": [asset.model_dump() for asset in registry.list_assets(status="active")],
+        "dry_runs": [record.model_dump() for record in dry_runs],
+        "latest_dry_run": dry_runs[0].model_dump() if dry_runs else None,
+        "selected_dry_run": selected_dry_run.model_dump() if selected_dry_run else None,
         "error": error,
     }
 
@@ -381,9 +400,14 @@ def update_asset_draft_form(
 
 
 @router.get("/review-profiles/{profile_id}", response_class=HTMLResponse)
-def review_profile_detail(request: Request, profile_id: str, error: str | None = None) -> HTMLResponse:
+def review_profile_detail(
+    request: Request,
+    profile_id: str,
+    error: str | None = None,
+    dry_run_id: str | None = None,
+) -> HTMLResponse:
     try:
-        data = _profile_detail_data(profile_id, error=error)
+        data = _profile_detail_data(profile_id, error=error, dry_run_id=dry_run_id)
     except AssetNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return templates.TemplateResponse(
@@ -394,6 +418,24 @@ def review_profile_detail(request: Request, profile_id: str, error: str | None =
             "data": data,
         },
     )
+
+
+@router.post("/review-profiles/{profile_id}/dry-run")
+def dry_run_profile_form(
+    profile_id: str,
+    contract_name: str | None = Form(default=None),
+    source_text: str = Form(...),
+) -> RedirectResponse:
+    try:
+        record = ProfileDryRunService().run(
+            profile_id,
+            contract_name=contract_name,
+            source_filename="profile-dry-run.txt",
+            source_text=source_text,
+        )
+    except ProfileDryRunError as exc:
+        return _redirect_with_asset_error(f"/review-profiles/{profile_id}", exc)
+    return RedirectResponse(url=f"/review-profiles/{profile_id}?dry_run_id={record.id}", status_code=303)
 
 
 @router.post("/review-profiles/{profile_id}/versions")

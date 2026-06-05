@@ -229,6 +229,31 @@ class TaskRecord(BaseModel):
     report_snapshot: ReportSnapshot | None = None
 
 
+class ProfileDryRunRecord(BaseModel):
+    id: str
+    profile_id: str
+    profile_name: str
+    profile_version: int
+    profile_status: str
+    contract_name: str
+    source_filename: str
+    created_by: str = "reviewer"
+    created_at: str
+    overall_risk: str
+    overall_risk_label: str
+    status: str
+    status_label: str
+    decision: str
+    decision_label: str
+    risk_count: int
+    high_risk_count: int
+    medium_risk_count: int
+    semantic_rule_count: int = 0
+    semantic_hit_count: int = 0
+    warning_count: int = 0
+    task_snapshot: dict = Field(default_factory=dict)
+
+
 class RagflowProbe(BaseModel):
     base_url: str
     status: str
