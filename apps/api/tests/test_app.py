@@ -49,6 +49,28 @@ def test_docs_endpoint(client: TestClient) -> None:
     assert response.status_code == 200
 
 
+def test_asset_registry_uses_injected_json_store(tmp_path: Path) -> None:
+    from app.services.assets import AssetRegistry, JsonAssetStore
+
+    store_path = tmp_path / "asset-store" / "assets.json"
+    registry = AssetRegistry(store=JsonAssetStore(store_path))
+
+    assert store_path.exists() is False
+    assert any(asset.id == "asset-hardrule-prepay-v1" for asset in registry.list_assets())
+    assert store_path.exists() is True
+
+    draft = registry.create_asset_draft(
+        asset_type="risk_message_template",
+        name="Injected store template",
+        content={"template": "hello {rule_title}"},
+    )
+    reloaded_registry = AssetRegistry(store=JsonAssetStore(store_path))
+    reloaded = reloaded_registry.get_asset(draft.id)
+
+    assert reloaded.name == "Injected store template"
+    assert reloaded.content_hash == draft.content_hash
+
+
 def test_review_profiles_and_assets_are_seeded(client: TestClient) -> None:
     profiles_response = client.get("/api/review-profiles")
     assets_response = client.get("/api/assets")

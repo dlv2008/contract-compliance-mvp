@@ -5,7 +5,8 @@ import json
 import re
 import uuid
 from datetime import datetime, timezone
-from typing import Any
+from pathlib import Path
+from typing import Any, Protocol
 
 from pydantic import ValidationError
 
@@ -108,6 +109,40 @@ class AssetNotFoundError(ValueError):
 
 class AssetStateError(ValueError):
     pass
+
+
+class AssetStore(Protocol):
+    def load_state(self) -> tuple[list[ConfigAsset], list[ReviewProfile]]:
+        pass
+
+    def save_state(self, assets: list[ConfigAsset], profiles: list[ReviewProfile]) -> None:
+        pass
+
+
+class JsonAssetStore:
+    def __init__(self, state_path: Path) -> None:
+        self.state_path = state_path
+
+    def load_state(self) -> tuple[list[ConfigAsset], list[ReviewProfile]]:
+        if not self.state_path.exists():
+            self.save_state([], [])
+        try:
+            payload = json.loads(self.state_path.read_text(encoding="utf-8"))
+            assets = [ConfigAsset.model_validate(item) for item in payload.get("assets", [])]
+            profiles = [ReviewProfile.model_validate(item) for item in payload.get("profiles", [])]
+        except (OSError, json.JSONDecodeError, ValidationError) as exc:
+            raise AssetStateError("配置资产仓库无法读取。") from exc
+        return assets, profiles
+
+    def save_state(self, assets: list[ConfigAsset], profiles: list[ReviewProfile]) -> None:
+        self.state_path.parent.mkdir(parents=True, exist_ok=True)
+        temp_path = self.state_path.with_suffix(".tmp")
+        payload = {
+            "assets": [asset.model_dump() for asset in assets],
+            "profiles": [profile.model_dump() for profile in profiles],
+        }
+        temp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        temp_path.replace(self.state_path)
 
 
 def utc_now() -> str:
@@ -676,9 +711,9 @@ SEED_PROFILES: list[ReviewProfile] = [
 
 
 class AssetRegistry:
-    def __init__(self, settings: Settings | None = None) -> None:
+    def __init__(self, settings: Settings | None = None, store: AssetStore | None = None) -> None:
         self.settings = settings or get_settings()
-        self.state_path = self.settings.data_dir / "assets.json"
+        self.store = store or JsonAssetStore(self.settings.data_dir / "assets.json")
 
     def list_assets(
         self,
@@ -1254,34 +1289,15 @@ class AssetRegistry:
             raise AssetStateError(f"配置集缺少必需资产：{', '.join(missing)}。")
 
     def _load_state(self) -> tuple[list[ConfigAsset], list[ReviewProfile]]:
-        self._ensure_state_file()
-        try:
-            payload = json.loads(self.state_path.read_text(encoding="utf-8"))
-            assets = [ConfigAsset.model_validate(item) for item in payload.get("assets", [])]
-            profiles = [ReviewProfile.model_validate(item) for item in payload.get("profiles", [])]
-        except (OSError, json.JSONDecodeError, ValidationError) as exc:
-            raise AssetStateError("配置资产仓库无法读取。") from exc
+        assets, profiles = self.store.load_state()
         assets, profiles = self._merge_seed_state(assets, profiles)
         assets, hash_changed = self._ensure_asset_content_hashes(assets)
         if hash_changed:
             self._save_state(assets, profiles)
         return assets, profiles
 
-    def _ensure_state_file(self) -> None:
-        if self.state_path.exists():
-            return
-        self.settings.data_dir.mkdir(parents=True, exist_ok=True)
-        self._save_state(list(SEED_ASSETS), list(SEED_PROFILES))
-
     def _save_state(self, assets: list[ConfigAsset], profiles: list[ReviewProfile]) -> None:
-        self.settings.data_dir.mkdir(parents=True, exist_ok=True)
-        temp_path = self.state_path.with_suffix(".tmp")
-        payload = {
-            "assets": [asset.model_dump() for asset in assets],
-            "profiles": [profile.model_dump() for profile in profiles],
-        }
-        temp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-        temp_path.replace(self.state_path)
+        self.store.save_state(assets, profiles)
 
     def _ensure_asset_content_hashes(self, assets: list[ConfigAsset]) -> tuple[list[ConfigAsset], bool]:
         changed = False
