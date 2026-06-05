@@ -39,11 +39,11 @@ SINGLETON_ASSET_TYPES = {
 
 ASSET_EXECUTION_STATUS = {
     "policy_reference": {
-        "status": "planned",
-        "label": "来源类资产",
-        "tone": "muted",
-        "summary": "制度依据资产用于规则溯源和报告引用，不直接参与合同审查执行。",
-        "next_step": "Step 4/5：由 LLM 生成草稿并在资产编辑器中审核来源引用。",
+        "status": "implemented",
+        "label": "已接入执行",
+        "tone": "ok",
+        "summary": "配置集绑定的 policy_reference 会进入任务冻结快照，用于风险依据和报告引用渲染；静态标题仅作为兜底。",
+        "next_step": "后续把 seed policy_reference 迁移到数据库初始化脚本，并接入 RAGFlow 原文依据。",
     },
     "clause_parse_template": {
         "status": "partially_implemented",
@@ -74,11 +74,11 @@ ASSET_EXECUTION_STATUS = {
         "next_step": "Step 9：hard_rule DSL 升级。",
     },
     "semantic_rule": {
-        "status": "partially_implemented",
-        "label": "部分接入",
-        "tone": "muted",
-        "summary": "资产可维护、可绑定并会进入配置快照；但 semantic_rule LLM Runner 尚未实现。",
-        "next_step": "Step 10：semantic_rule LLM Runner。",
+        "status": "implemented",
+        "label": "已接入执行",
+        "tone": "ok",
+        "summary": "配置集绑定的 semantic_rule 会进入 rule_context，并由审查引擎通过 LLM/mock runner 输出结构化判断；低置信或无证据不会直接生成风险。",
+        "next_step": "后续补充语义规则可视化审核、LLM execution 落库和可恢复 workflow。",
     },
     "risk_evaluation_policy": {
         "status": "partially_implemented",
@@ -1872,63 +1872,49 @@ class AssetRegistry:
         extraction_schemas = []
         extraction_rules = []
         prompt_templates = []
+        semantic_rules = []
+        policy_references = []
+        risk_evaluation_policies = []
+        risk_message_templates = []
+        report_templates = []
         for ref in profile.assets:
             asset = next((item for item in assets if item.id == ref.asset_id), None)
             if not asset or asset.status != "active":
                 continue
+            context_item = {
+                "asset_id": asset.id,
+                "asset_version": asset.version,
+                "asset_content_hash": asset.content_hash,
+                "schema_version": asset.schema_version,
+                "name": asset.name,
+                "description": asset.description,
+                "applicability": asset.applicability,
+                **asset.content,
+            }
             if asset.asset_type == "clause_parse_template":
-                clause_parse_templates.append(
-                    {
-                        "asset_id": asset.id,
-                        "asset_version": asset.version,
-                        "asset_content_hash": asset.content_hash,
-                        "schema_version": asset.schema_version,
-                        **asset.content,
-                    }
-                )
+                clause_parse_templates.append(context_item)
             if asset.asset_type == "extraction_schema":
-                extraction_schemas.append(
-                    {
-                        "asset_id": asset.id,
-                        "asset_version": asset.version,
-                        "asset_content_hash": asset.content_hash,
-                        "schema_version": asset.schema_version,
-                        **asset.content,
-                    }
-                )
+                extraction_schemas.append(context_item)
             if asset.asset_type == "extraction_rule":
-                extraction_rules.append(
-                    {
-                        "asset_id": asset.id,
-                        "asset_version": asset.version,
-                        "asset_content_hash": asset.content_hash,
-                        "schema_version": asset.schema_version,
-                        **asset.content,
-                    }
-                )
+                extraction_rules.append(context_item)
             if asset.asset_type == "prompt_template":
-                prompt_templates.append(
-                    {
-                        "asset_id": asset.id,
-                        "asset_version": asset.version,
-                        "asset_content_hash": asset.content_hash,
-                        "schema_version": asset.schema_version,
-                        **asset.content,
-                    }
-                )
+                prompt_templates.append(context_item)
             if asset.asset_type == "hard_rule":
-                hard_rules.append(
-                    {
-                        "asset_id": asset.id,
-                        "asset_version": asset.version,
-                        "asset_content_hash": asset.content_hash,
-                        **asset.content,
-                    }
-                )
+                hard_rules.append(context_item)
                 threshold_condition = self._find_threshold_condition(asset)
                 if threshold_condition is not None:
                     threshold = float(threshold_condition)
                     source_asset_id = asset.id
+            if asset.asset_type == "semantic_rule":
+                semantic_rules.append(context_item)
+            if asset.asset_type == "policy_reference":
+                policy_references.append(context_item)
+            if asset.asset_type == "risk_evaluation_policy":
+                risk_evaluation_policies.append(context_item)
+            if asset.asset_type == "risk_message_template":
+                risk_message_templates.append(context_item)
+            if asset.asset_type == "report_template":
+                report_templates.append(context_item)
         return {
             "prepay_threshold": threshold,
             "prepay_threshold_asset_id": source_asset_id,
@@ -1937,6 +1923,11 @@ class AssetRegistry:
             "extraction_schemas": extraction_schemas,
             "extraction_rules": extraction_rules,
             "prompt_templates": prompt_templates,
+            "semantic_rules": semantic_rules,
+            "policy_references": policy_references,
+            "risk_evaluation_policies": risk_evaluation_policies,
+            "risk_message_templates": risk_message_templates,
+            "report_templates": report_templates,
         }
 
     def execution_status_for_asset_type(self, asset_type: str) -> dict[str, str]:

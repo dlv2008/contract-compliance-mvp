@@ -129,15 +129,35 @@ def analyze_contract(
     facts = extract_facts(resolved_name, contract_type, clauses, normalized_text, rule_context=rule_context)
     risks = evaluate_rules(contract_type, facts, rule_context=rule_context)
     apply_llm_extraction_fallback(facts, clauses, normalized_text, contract_type, rule_context=rule_context)
+    semantic_results = evaluate_semantic_rules(
+        contract_type,
+        facts,
+        clauses,
+        normalized_text,
+        rule_context=rule_context,
+    )
+    for result in semantic_results:
+        semantic_risk = result.get("risk")
+        if isinstance(semantic_risk, RiskFinding) and not risk_is_duplicate(semantic_risk, risks):
+            risks.append(semantic_risk)
+    risks.sort(key=lambda item: risk_priority(item.level), reverse=True)
     clauses = apply_clause_status(clauses, risks)
     extracted_fields = build_extracted_fields(contract_type, facts, rule_context=rule_context)
-    overall_risk = derive_overall_risk(risks)
-    status = derive_status(overall_risk)
+    overall_risk = derive_overall_risk(risks, rule_context=rule_context)
+    status = derive_status(overall_risk, rule_context=rule_context)
     decision = derive_decision(overall_risk)
     created_at = created_at or datetime.now(timezone.utc).isoformat(timespec="seconds")
-    workflow_steps = build_workflow_steps(created_at, status, clauses=clauses)
-    agent_trace = build_agent_trace(created_at, contract_type, clauses, extracted_fields, risks, status)
-    report_snapshot = build_report_snapshot(resolved_name, risks, decision)
+    workflow_steps = build_workflow_steps(created_at, status, clauses=clauses, semantic_results=semantic_results)
+    agent_trace = build_agent_trace(
+        created_at,
+        contract_type,
+        clauses,
+        extracted_fields,
+        risks,
+        status,
+        semantic_results=semantic_results,
+    )
+    report_snapshot = build_report_snapshot(resolved_name, risks, decision, rule_context=rule_context)
     return TaskRecord(
         id=task_id,
         name=resolved_name,
@@ -203,6 +223,7 @@ def build_review_payload(
     resolved_count = sum(risk.review_status in {"confirmed", "rejected", "revised"} for risk in task.risks)
     pending_count = len(task.risks) - resolved_count
     top_rule = task.risks[0].rule_id if task.risks else "未命中"
+    policy_titles = policy_reference_titles_from_snapshot(task.selected_profile_snapshot)
     return {
         "task": {
             "id": task.id,
@@ -279,9 +300,11 @@ def build_review_payload(
                 "level": risk.level,
                 "title": risk.title,
                 "rule": risk.rule_id,
+                "source": risk_source(risk),
+                "source_label": risk_source_label(risk),
                 "reason": risk.reason,
                 "evidence": "、".join(risk.evidence_clause_ids) or "未定位",
-                "policy": " / ".join(render_policy_reference(policy_id) for policy_id in risk.policy_reference_ids),
+                "policy": " / ".join(render_policy_reference(policy_id, policy_titles=policy_titles) for policy_id in risk.policy_reference_ids),
                 "action": risk.action,
                 "review_status": risk.review_status,
                 "review_status_label": render_review_status(risk.review_status),
@@ -1004,6 +1027,272 @@ def evaluate_rules(
     return risks
 
 
+def evaluate_semantic_rules(
+    contract_type: str,
+    facts: dict[str, dict[str, Any]],
+    clauses: list[Clause],
+    text: str,
+    *,
+    rule_context: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    rule_context = rule_context or {}
+    prompt_template = active_prompt_template(rule_context, purpose="semantic_rule")
+    results: list[dict[str, Any]] = []
+    for rule in rule_context.get("semantic_rules") or []:
+        if not semantic_rule_matches_contract_type(rule, contract_type):
+            continue
+        result = run_semantic_rule(
+            rule=rule,
+            facts=facts,
+            clauses=clauses,
+            text=text,
+            prompt_template=prompt_template,
+        )
+        results.append(result)
+    return results
+
+
+def run_semantic_rule(
+    *,
+    rule: dict[str, Any],
+    facts: dict[str, dict[str, Any]],
+    clauses: list[Clause],
+    text: str,
+    prompt_template: dict[str, Any] | None,
+) -> dict[str, Any]:
+    settings = get_settings()
+    provider = settings.llm_draft_provider
+    status = "success"
+    error_detail: str | None = None
+    if provider == "mock" or (provider == "auto" and not settings.llm_api_key):
+        payload = mock_semantic_rule_result(rule=rule, facts=facts, clauses=clauses, text=text)
+        provider_used = "mock"
+    else:
+        try:
+            response = LLMClient(settings).complete_json(
+                messages=build_semantic_rule_messages(
+                    rule=rule,
+                    facts=facts,
+                    clauses=clauses,
+                    text=text,
+                    prompt_template=prompt_template,
+                ),
+                max_tokens=1200,
+            )
+            parsed = response.get("parsed_json")
+            payload = parsed if isinstance(parsed, dict) else {}
+            provider_used = "llm"
+        except Exception as exc:  # noqa: BLE001
+            error_detail = str(exc)
+            if provider == "auto":
+                payload = mock_semantic_rule_result(rule=rule, facts=facts, clauses=clauses, text=text)
+                provider_used = "mock_fallback"
+                status = "fallback"
+            else:
+                payload = {}
+                provider_used = "llm"
+                status = "failed"
+
+    normalized = normalize_semantic_rule_payload(payload, clauses)
+    if status != "failed":
+        status = semantic_result_status(normalized)
+    risk = build_semantic_risk(rule, normalized) if status == "hit" else None
+    return {
+        "asset_id": rule.get("asset_id"),
+        "asset_version": rule.get("asset_version"),
+        "schema_version": rule.get("schema_version") or rule.get("output_schema"),
+        "name": rule.get("name"),
+        "status": status,
+        "provider": provider_used,
+        "prompt_template_id": (prompt_template or {}).get("asset_id") or rule.get("prompt_template_id"),
+        "confidence": normalized.get("confidence"),
+        "hit": normalized.get("hit"),
+        "evidence_clause_ids": normalized.get("evidence_clause_ids") or [],
+        "reasoning_summary": normalized.get("reasoning_summary"),
+        "error_detail": error_detail,
+        "risk": risk,
+    }
+
+
+def build_semantic_rule_messages(
+    *,
+    rule: dict[str, Any],
+    facts: dict[str, dict[str, Any]],
+    clauses: list[Clause],
+    text: str,
+    prompt_template: dict[str, Any] | None,
+) -> list[dict[str, str]]:
+    clause_text = "\n\n".join(f"[{clause.id}] {clause.title}\n{clause.text}" for clause in clauses[:24])
+    fact_payload = {
+        key: {
+            "value": item.get("value"),
+            "status": item.get("status"),
+            "evidence_clause_ids": item.get("evidence_clause_ids") or [],
+        }
+        for key, item in facts.items()
+        if not key.startswith("_")
+    }
+    return [
+        {
+            "role": "system",
+            "content": (
+                "You are a contract compliance semantic-rule reviewer. "
+                "Return only a JSON object with keys: hit, confidence, evidence_clause_ids, "
+                "reasoning_summary, title, risk_level, reason, action. "
+                "Do not report a hit without clause evidence."
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                f"Prompt template: {prompt_template or {}}\n"
+                f"Semantic rule asset: {rule}\n"
+                f"Extracted facts: {fact_payload}\n\n"
+                f"Clauses:\n{clause_text}\n\n"
+                f"Full contract text:\n{text[:8000]}"
+            ),
+        },
+    ]
+
+
+def mock_semantic_rule_result(
+    *,
+    rule: dict[str, Any],
+    facts: dict[str, dict[str, Any]],
+    clauses: list[Clause],
+    text: str,
+) -> dict[str, Any]:
+    renewal_clause = first_clause_matching(
+        clauses,
+        [
+            "续约",
+            "顺延",
+            "续签",
+            "自动续约",
+            "自动顺延",
+            "默认顺延",
+            "ç»­çº¦",
+            "é¡ºå»¶",
+            "ç»­ç­¾",
+        ],
+    )
+    renewal_text = f"{renewal_clause.title}\n{renewal_clause.text}" if renewal_clause else text
+    auto_renewal = bool(fact_value(facts, "term.auto_renewal")) or any(
+        keyword in renewal_text
+        for keyword in ["自动续约", "自动顺延", "默认顺延", "自动续展", "è‡ªåŠ¨ç»­çº¦", "è‡ªåŠ¨é¡ºå»¶", "é»˜è®¤é¡ºå»¶"]
+    )
+    approval_required = bool(fact_value(facts, "approval.exception_required")) or any(
+        keyword in renewal_text
+        for keyword in [
+            "审批",
+            "书面",
+            "另行签署",
+            "重新签署",
+            "提前通知",
+            "退出",
+            "å®¡æ‰¹",
+            "ä¹¦é¢",
+            "å¦è¡Œç­¾ç½²",
+            "é‡æ–°ç­¾ç½²",
+        ]
+    )
+    renewal_text_lower = renewal_text.lower()
+    auto_renewal = auto_renewal or any(keyword in renewal_text_lower for keyword in ["auto renewal", "automatic renewal", "renew automatically"])
+    approval_required = approval_required or any(keyword in renewal_text_lower for keyword in ["approval", "written renewal", "opt-out", "written confirmation"])
+    hit = auto_renewal and not approval_required
+    evidence_ids = ids_of([renewal_clause]) if renewal_clause else []
+    if not evidence_ids and auto_renewal:
+        evidence_ids = (
+            evidence_ids_for_fragment(clauses, "automatic renewal")
+            or evidence_ids_for_fragment(clauses, "auto renewal")
+            or evidence_ids_for_fragment(clauses, "renew automatically")
+        )
+    return {
+        "hit": hit,
+        "confidence": 0.88 if hit and evidence_ids else 0.68,
+        "evidence_clause_ids": evidence_ids,
+        "reasoning_summary": "mock semantic check for auto-renewal approval precondition",
+        "title": rule.get("title") or rule.get("name") or rule.get("asset_id"),
+        "risk_level": rule.get("level") or rule.get("risk_level") or "high",
+        "reason": "Semantic rule found auto-renewal language without approval or written renewal precondition.",
+        "action": "Ask the business owner to add approval, written renewal, or opt-out controls.",
+        "policy_reference_ids": rule.get("policy_reference_ids") or ["POLICY-REV-004"],
+    }
+
+
+def normalize_semantic_rule_payload(payload: dict[str, Any], clauses: list[Clause]) -> dict[str, Any]:
+    hit = bool(payload.get("hit"))
+    confidence = coerce_number(payload.get("confidence")) or 0.0
+    valid_clause_ids = {clause.id for clause in clauses}
+    evidence_ids = [
+        item
+        for item in list_strings(payload.get("evidence_clause_ids") or payload.get("evidence"))
+        if item in valid_clause_ids
+    ]
+    if not evidence_ids and payload.get("evidence_text"):
+        evidence_ids = evidence_ids_for_fragment(clauses, str(payload.get("evidence_text")))
+    return {
+        "hit": hit,
+        "confidence": confidence,
+        "evidence_clause_ids": evidence_ids,
+        "reasoning_summary": payload.get("reasoning_summary") or payload.get("reasoning") or "",
+        "title": payload.get("title"),
+        "risk_level": payload.get("risk_level") or payload.get("level"),
+        "reason": payload.get("reason"),
+        "action": payload.get("action"),
+        "policy_reference_ids": payload.get("policy_reference_ids") or payload.get("policy_reference"),
+    }
+
+
+def semantic_result_status(payload: dict[str, Any]) -> str:
+    if not payload.get("hit"):
+        return "no_hit"
+    if (payload.get("confidence") or 0) < 0.75:
+        return "low_confidence"
+    if not payload.get("evidence_clause_ids"):
+        return "missing_evidence"
+    return "hit"
+
+
+def build_semantic_risk(rule: dict[str, Any], payload: dict[str, Any]) -> RiskFinding:
+    title = str(payload.get("title") or rule.get("title") or rule.get("name") or rule.get("asset_id"))
+    return build_risk(
+        rule_id=str(rule.get("rule_id") or rule.get("asset_id") or "SEMANTIC-RULE"),
+        title=title,
+        level=str(payload.get("risk_level") or rule.get("level") or rule.get("risk_level") or "medium"),
+        reason=str(payload.get("reason") or payload.get("reasoning_summary") or "Semantic rule hit."),
+        evidence_ids=list_strings(payload.get("evidence_clause_ids")),
+        policy_ids=normalize_policy_ids(payload.get("policy_reference_ids") or rule.get("policy_reference_ids") or ["POLICY-REV-004"]),
+        action=str(payload.get("action") or rule.get("action") or "Please review this semantic-rule finding."),
+        rule_version=f"semantic:{rule.get('asset_id')}@v{rule.get('asset_version') or 1}",
+    )
+
+
+def semantic_rule_matches_contract_type(rule: dict[str, Any], contract_type: str) -> bool:
+    applicability = rule.get("applicability")
+    if isinstance(applicability, dict):
+        expected = applicability.get("contract_type")
+        if isinstance(expected, list):
+            return contract_type in expected
+        if expected:
+            return expected == contract_type
+    expected = rule.get("contract_type")
+    if isinstance(expected, list):
+        return contract_type in expected
+    return not expected or expected == contract_type
+
+
+def risk_is_duplicate(candidate: RiskFinding, existing: list[RiskFinding]) -> bool:
+    candidate_evidence = set(candidate.evidence_clause_ids)
+    for risk in existing:
+        if candidate.title == risk.title:
+            return True
+        if candidate_evidence and candidate_evidence == set(risk.evidence_clause_ids):
+            if "续约" in candidate.title or "ç»­çº¦" in candidate.title:
+                return True
+    return False
+
+
 def evaluate_hard_rule(
     rule: dict[str, Any],
     contract_type: str,
@@ -1302,6 +1591,7 @@ def build_risk(
     evidence_ids: list[str],
     policy_ids: list[str],
     action: str,
+    rule_version: str = "mvp-rules-v1",
 ) -> RiskFinding:
     policy_reference_ids = merge_ids(policy_ids, ["POLICY-REV-003"])
     return RiskFinding(
@@ -1313,6 +1603,7 @@ def build_risk(
         evidence_clause_ids=evidence_ids,
         policy_reference_ids=policy_reference_ids,
         action=action,
+        rule_version=rule_version,
     )
 
 
@@ -1402,7 +1693,14 @@ def apply_clause_status(clauses: list[Clause], risks: list[RiskFinding]) -> list
     return updated
 
 
-def derive_overall_risk(risks: list[RiskFinding]) -> str:
+def derive_overall_risk(risks: list[RiskFinding], rule_context: dict[str, Any] | None = None) -> str:
+    policy = active_risk_policy(rule_context)
+    if policy is not None:
+        if any(risk.level == "high" for risk in risks):
+            return str((policy.get("high") or {}).get("overall_risk") or "red")
+        if any(risk.level == "medium" for risk in risks):
+            return str((policy.get("medium") or {}).get("overall_risk") or "yellow")
+        return str((policy.get("none") or {}).get("overall_risk") or "green")
     if any(risk.level == "high" for risk in risks):
         return "red"
     if any(risk.level == "medium" for risk in risks):
@@ -1410,14 +1708,39 @@ def derive_overall_risk(risks: list[RiskFinding]) -> str:
     return "green"
 
 
-def derive_status(overall_risk: str, risks: list[RiskFinding] | None = None) -> str:
+def derive_status(
+    overall_risk: str,
+    risks: list[RiskFinding] | None = None,
+    rule_context: dict[str, Any] | None = None,
+) -> str:
     if risks is not None and risks and all(is_review_resolved(risk) for risk in risks):
         return "review_completed"
+    policy = active_risk_policy(rule_context)
+    if policy is not None:
+        if overall_risk == "red":
+            return str((policy.get("high") or {}).get("status") or "pending_review")
+        if overall_risk == "yellow":
+            return str((policy.get("medium") or {}).get("status") or "watchlist")
+        return str((policy.get("none") or {}).get("status") or "ready")
     if overall_risk == "red":
         return "pending_review"
     if overall_risk == "yellow":
         return "watchlist"
     return "ready"
+
+
+def active_risk_policy(rule_context: dict[str, Any] | None) -> dict[str, Any] | None:
+    policies = (rule_context or {}).get("risk_evaluation_policies") or []
+    if not policies:
+        return None
+    content = policies[-1]
+    return content if isinstance(content, dict) else None
+
+
+def active_report_template(rule_context: dict[str, Any] | None) -> dict[str, Any] | None:
+    templates = (rule_context or {}).get("report_templates") or []
+    template = templates[-1] if templates else None
+    return template if isinstance(template, dict) else None
 
 
 def derive_decision(overall_risk: str, risks: list[RiskFinding] | None = None) -> str:
@@ -1568,6 +1891,14 @@ def risk_priority(level: str) -> int:
     return {"high": 3, "medium": 2, "low": 1}.get(level, 0)
 
 
+def risk_source(risk: RiskFinding) -> str:
+    return "semantic_rule" if risk.rule_version.startswith("semantic:") else "hard_rule"
+
+
+def risk_source_label(risk: RiskFinding) -> str:
+    return "LLM semantic rule" if risk_source(risk) == "semantic_rule" else "hard rule"
+
+
 def overall_risk_to_chip_tone(overall_risk: str) -> str:
     return {"red": "high", "yellow": "medium", "green": "low"}[overall_risk]
 
@@ -1576,11 +1907,26 @@ def overall_risk_to_state_class(overall_risk: str) -> str:
     return {"red": "state-danger", "yellow": "state-warn", "green": "state-ok"}[overall_risk]
 
 
-def render_policy_reference(policy_id: str) -> str:
-    title = POLICY_TITLES.get(policy_id)
+def render_policy_reference(policy_id: str, policy_titles: dict[str, str] | None = None) -> str:
+    title = (policy_titles or {}).get(policy_id) or POLICY_TITLES.get(policy_id)
     if title:
         return f"{policy_id} {title}"
     return policy_id
+
+
+def policy_reference_titles_from_snapshot(snapshot: dict | None) -> dict[str, str]:
+    titles: dict[str, str] = {}
+    if not isinstance(snapshot, dict):
+        return titles
+    for asset in snapshot.get("assets") or []:
+        if not isinstance(asset, dict) or asset.get("asset_type") != "policy_reference":
+            continue
+        content = asset.get("content") if isinstance(asset.get("content"), dict) else {}
+        reference_id = content.get("reference_id") or content.get("policy_id") or asset.get("asset_id")
+        title = content.get("title") or asset.get("name")
+        if reference_id and title:
+            titles[str(reference_id)] = str(title)
+    return titles
 
 
 def render_review_status(status: str) -> str:
@@ -1609,17 +1955,65 @@ def render_review_action(action_type: str) -> str:
     return labels.get(action_type, action_type)
 
 
-def build_workflow_steps(created_at: str, status: str, *, clauses: list[Clause] | None = None) -> list[WorkflowStep]:
+def build_workflow_steps(
+    created_at: str,
+    status: str,
+    *,
+    clauses: list[Clause] | None = None,
+    semantic_results: list[dict[str, Any]] | None = None,
+) -> list[WorkflowStep]:
     review_status = "waiting" if status == "pending_review" else "done"
     parser_sources = {clause.parser_source for clause in clauses or []}
     parsing_status = "warning" if any(source.startswith("fallback:") for source in parser_sources) else "done"
+    semantic_results = semantic_results or []
+    semantic_warning_statuses = {"failed", "fallback", "low_confidence", "missing_evidence"}
+    semantic_status = (
+        "warning"
+        if any(result.get("status") in semantic_warning_statuses for result in semantic_results)
+        else "done"
+    )
     return [
         WorkflowStep(key="uploaded", label="原件存档", status="done", updated_at=created_at),
         WorkflowStep(key="parsing", label="条款解析", status=parsing_status, updated_at=created_at),
         WorkflowStep(key="extracting", label="事实抽取", status="done", updated_at=created_at),
         WorkflowStep(key="evaluating", label="规则裁决", status="done", updated_at=created_at),
+        WorkflowStep(key="semantic_rules", label="LLM semantic rules", status=semantic_status, updated_at=created_at),
         WorkflowStep(key="review", label="人工复核", status=review_status, updated_at=created_at),
         WorkflowStep(key="report", label="报告快照", status="done", updated_at=created_at),
+    ]
+
+
+def build_semantic_trace_events(created_at: str, semantic_results: list[dict[str, Any]]) -> list[AgentTraceEvent]:
+    if not semantic_results:
+        return []
+    hit_count = sum(1 for result in semantic_results if result.get("status") == "hit")
+    warning_count = sum(
+        1
+        for result in semantic_results
+        if result.get("status") in {"failed", "fallback", "low_confidence", "missing_evidence"}
+    )
+    return [
+        AgentTraceEvent(
+            at=created_at,
+            type="semantic.evaluate",
+            message=f"Semantic rules completed: {hit_count} hit, {warning_count} warning.",
+            payload={
+                "semantic_rule_count": len(semantic_results),
+                "hit_count": hit_count,
+                "warning_count": warning_count,
+                "results": [
+                    {
+                        "asset_id": result.get("asset_id"),
+                        "status": result.get("status"),
+                        "provider": result.get("provider"),
+                        "confidence": result.get("confidence"),
+                        "evidence_clause_ids": result.get("evidence_clause_ids") or [],
+                        "prompt_template_id": result.get("prompt_template_id"),
+                    }
+                    for result in semantic_results
+                ],
+            },
+        )
     ]
 
 
@@ -1630,9 +2024,11 @@ def build_agent_trace(
     extracted_fields: list[ExtractedField],
     risks: list[RiskFinding],
     status: str,
+    semantic_results: list[dict[str, Any]] | None = None,
 ) -> list[AgentTraceEvent]:
     awaiting_review = status == "pending_review"
     llm_candidate_fields = [field.key for field in extracted_fields if field.status == "candidate"]
+    semantic_results = semantic_results or []
     return [
         AgentTraceEvent(
             at=created_at,
@@ -1668,6 +2064,7 @@ def build_agent_trace(
             message=f"规则引擎完成初筛，命中 {len(risks)} 条风险。",
             payload={"risk_count": len(risks)},
         ),
+        *build_semantic_trace_events(created_at, semantic_results),
         AgentTraceEvent(
             at=created_at,
             type="review.route",
@@ -1685,9 +2082,12 @@ def build_report_snapshot(
     decision: str,
     report_type: str = "process_snapshot",
     generated_by: str = "system",
+    rule_context: dict[str, Any] | None = None,
 ) -> ReportSnapshot:
     high_count = sum(risk.level == "high" for risk in risks)
     medium_count = sum(risk.level == "medium" for risk in risks)
+    template = active_report_template(rule_context)
+    template_name = template.get("name") if template else None
     report_type_label = "交付报告" if report_type == "delivery_report" else "过程快照"
     title_suffix = "审查交付报告" if report_type == "delivery_report" else "审查报告快照"
     return ReportSnapshot(

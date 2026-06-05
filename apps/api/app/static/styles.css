@@ -1007,6 +1007,26 @@ a {
     margin-bottom: 8px;
 }
 
+.risk-rule-meta {
+    display: inline-flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 8px;
+    flex-wrap: wrap;
+    color: var(--muted);
+    font-size: 12px;
+    text-align: right;
+}
+
+.risk-rule-meta em {
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    padding: 2px 7px;
+    background: rgba(255, 255, 255, 0.68);
+    color: var(--text);
+    font-style: normal;
+}
+
 .risk-meta {
     margin: 12px 0;
 }

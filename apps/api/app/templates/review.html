@@ -122,7 +122,10 @@
             <article class="risk-card risk-{{ risk.level }}">
                 <div class="risk-top">
                     <strong>{{ risk.title }}</strong>
-                    <span>{{ risk.rule }}</span>
+                    <span class="risk-rule-meta">
+                        <span>{{ risk.rule }}</span>
+                        <em>{{ risk.source_label }}</em>
+                    </span>
                 </div>
                 <div class="review-status-line">
                     <span class="review-status review-status-{{ risk.review_status }}">{{ risk.review_status_label }}</span>

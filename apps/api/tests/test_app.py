@@ -258,6 +258,136 @@ def test_delete_controls_remove_only_safe_objects(client: TestClient) -> None:
     assert allowed_delete_response.status_code == 204
 
 
+def test_semantic_rule_mock_runner_creates_trace_and_risk(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CONTRACT_COMPLIANCE_LLM_DRAFT_PROVIDER", "mock")
+    from app.config import get_settings
+    from app.services.review_engine import analyze_contract
+
+    get_settings.cache_clear()
+    rule_context = {
+        "clause_parse_templates": [
+            {
+                "asset_id": "asset-clause-ascii-test-v1",
+                "schema_version": "clause-parse-template-v1",
+                "header_pattern": r"^\[(?P<id>[A-Z]\d{3})\](?P<title>.+?)\s*$",
+                "fallback": "paragraph_split",
+            }
+        ],
+        "hard_rules": [],
+        "semantic_rules": [
+            {
+                "asset_id": "asset-semantic-auto-renewal-v1",
+                "asset_version": 1,
+                "schema_version": "semantic-rule-v1",
+                "name": "Auto renewal approval precondition",
+                "applicability": {"contract_type": ["unknown_contract", "service_contract"]},
+                "policy_reference_ids": ["POLICY-REV-004"],
+            }
+        ],
+        "prompt_templates": [
+            {
+                "asset_id": "asset-prompt-semantic-rule-v1",
+                "purpose": "semantic_rule",
+                "schema_version": "prompt-template-v1",
+            }
+        ],
+        "risk_evaluation_policies": [
+            {
+                "high": {"overall_risk": "red", "status": "pending_review"},
+                "medium": {"overall_risk": "yellow", "status": "watchlist"},
+                "none": {"overall_risk": "green", "status": "ready"},
+            }
+        ],
+    }
+    task = analyze_contract(
+        task_id="task-semantic-test",
+        source_filename="semantic-test.txt",
+        contract_name="Master Service Agreement",
+        contract_text=(
+            "[A001] Parties\n"
+            "Party A: Alpha Corp\nParty B: Beta Ltd\n\n"
+            "[T001] Term\n"
+            "The agreement contains automatic renewal for one year after expiry."
+        ),
+        rule_context=rule_context,
+    )
+
+    semantic_risks = [risk for risk in task.risks if risk.rule_version.startswith("semantic:")]
+    assert len(semantic_risks) == 1
+    assert semantic_risks[0].evidence_clause_ids == ["T001"]
+    assert task.status == "pending_review"
+    assert any(step.key == "semantic_rules" and step.status == "done" for step in task.workflow_steps)
+    semantic_trace = next(event for event in task.agent_trace if event.type == "semantic.evaluate")
+    assert semantic_trace.payload["hit_count"] == 1
+    assert semantic_trace.payload["results"][0]["provider"] == "mock"
+
+
+def test_policy_reference_titles_prefer_profile_snapshot() -> None:
+    from app.models import RagflowProbe, LLMProbe, RiskFinding, TaskRecord
+    from app.services.review_engine import build_review_payload
+
+    task = TaskRecord(
+        id="task-policy-test",
+        name="Policy title test",
+        contract_type="unknown_contract",
+        contract_type_label="Unknown",
+        source_filename="policy.txt",
+        status="pending_review",
+        status_label="Pending",
+        overall_risk="red",
+        overall_risk_label="High",
+        decision="manual_review",
+        decision_label="Manual review",
+        summary="summary",
+        created_at="2026-06-05T00:00:00+00:00",
+        contract_text="",
+        risks=[
+            RiskFinding(
+                rule_id="RISK-1",
+                title="Risk",
+                level="high",
+                message="Risk",
+                reason="Reason",
+                evidence_clause_ids=[],
+                policy_reference_ids=["POLICY-CUSTOM-001"],
+                action="Action",
+            )
+        ],
+        selected_profile_snapshot={
+            "assets": [
+                {
+                    "asset_id": "asset-policy-custom-v1",
+                    "asset_type": "policy_reference",
+                    "name": "Fallback name",
+                    "content": {
+                        "reference_id": "POLICY-CUSTOM-001",
+                        "title": "Custom policy title from asset",
+                    },
+                }
+            ]
+        },
+    )
+
+    payload = build_review_payload(
+        task,
+        RagflowProbe(base_url="http://ragflow.local", status="offline", healthy=False, detail="offline"),
+        LLMProbe(
+            configured=False,
+            verified=False,
+            base_url="http://llm.local",
+            chat_completions_url="http://llm.local/v1/chat/completions",
+            model="mock",
+            status="not_configured",
+            title="LLM",
+            detail="not configured",
+            api_key_present=False,
+        ),
+    )
+
+    assert payload["risks"][0]["policy"] == "POLICY-CUSTOM-001 Custom policy title from asset"
+    assert payload["risks"][0]["source"] == "hard_rule"
+
+
 def test_asset_draft_editor_updates_and_validates_hard_rule(client: TestClient) -> None:
     draft_response = client.post(
         "/api/rule-drafts/generate",
@@ -862,7 +992,7 @@ def test_asset_execution_audit_reports_real_runtime_coverage(client: TestClient)
     assert audit_items["hard_rule"]["status"] == "implemented"
     assert audit_items["hard_rule"]["active_assets"] >= 1
     assert audit_items["extraction_schema"]["status"] == "partially_implemented"
-    assert audit_items["semantic_rule"]["status"] == "partially_implemented"
+    assert audit_items["semantic_rule"]["status"] == "implemented"
 
     profile_audit = profile_response.json()["execution_audit"]
     assert profile_audit["summary"]["implemented"] >= 1
