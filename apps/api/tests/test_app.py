@@ -20,6 +20,7 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     monkeypatch.setenv("RAGFLOW_BASE_URL", "http://127.0.0.1:65530")
     monkeypatch.setenv("LLM_API_KEY", "test-secret-value")
     monkeypatch.setenv("LLM_PROBE_ENABLED", "0")
+    monkeypatch.setenv("CONTRACT_COMPLIANCE_LLM_DRAFT_PROVIDER", "mock")
 
     from app.config import get_settings
     from app.main import create_app
@@ -130,6 +131,213 @@ def test_rule_drafts_page_imports_source_document_and_shows_chunks(client: TestC
     assert "服务合同续约经验" in page_response.text
     assert "切分结果" in page_response.text
     assert "自动续约" in page_response.text
+
+
+def test_llm_rule_draft_generation_uses_source_document_chunks(client: TestClient) -> None:
+    source_response = client.post(
+        "/api/asset-source-documents",
+        json={
+            "name": "采购预付款管理制度 v2",
+            "source_text": "第一条 采购合同预付款原则上不得超过合同总价 25%。\n第二条 超过比例时需要补充例外审批。",
+            "source_type": "policy_document",
+        },
+    )
+    assert source_response.status_code == 201
+    document = source_response.json()["document"]
+
+    draft_response = client.post(
+        "/api/rule-drafts/generate",
+        json={
+            "source_document_id": document["id"],
+            "profile_hint": {"contract_type": "procurement_contract"},
+            "draft_types": ["policy_reference", "hard_rule", "semantic_rule", "extraction_rule"],
+        },
+    )
+
+    assert draft_response.status_code == 201
+    payload = draft_response.json()
+    drafts = payload["drafts"]
+    execution = payload["llm_execution"]
+    draft_types = {draft["asset_type"] for draft in drafts}
+
+    assert draft_types == {"policy_reference", "hard_rule", "semantic_rule", "extraction_rule"}
+    assert all(draft["status"] == "draft" for draft in drafts)
+    assert execution["status"] == "mock_success"
+    assert execution["input_payload"]["source_document_id"] == document["id"]
+    assert execution["prompt_template_id"] == "asset-prompt-rule-draft-v1"
+
+    hard_rule = next(draft for draft in drafts if draft["asset_type"] == "hard_rule")
+    assert hard_rule["content"]["conditions"][0]["value"] == 25
+    assert hard_rule["content"]["source_document_id"] == document["id"]
+    assert hard_rule["content"]["source_content_hash"] == document["content_hash"]
+    assert hard_rule["content"]["llm_execution_id"] == execution["id"]
+
+    executions_response = client.get("/api/llm-executions?purpose=rule_draft")
+    assert executions_response.status_code == 200
+    assert executions_response.json()["total"] == 1
+    assert executions_response.json()["items"][0]["id"] == execution["id"]
+
+
+def test_rule_drafts_page_marks_latest_generated_assets(client: TestClient) -> None:
+    source_response = client.post(
+        "/api/asset-source-documents",
+        json={
+            "name": "采购付款审批制度",
+            "source_text": "第一条 采购合同预付款原则上不得超过合同总价 25%。",
+            "source_type": "policy_document",
+        },
+    )
+    document_id = source_response.json()["document"]["id"]
+
+    response = client.post(
+        "/rule-drafts/generate",
+        data={
+            "source_document_id": document_id,
+            "source_text": "第一条 采购合同预付款原则上不得超过合同总价 25%。",
+            "contract_type": "procurement_contract",
+            "include_policy_reference": "true",
+            "include_semantic_rule": "true",
+            "include_extraction_rule": "true",
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    location = response.headers["location"]
+    assert "latest_execution_id=llm-draft-" in location
+
+    page_response = client.get(location)
+    assert page_response.status_code == 200
+    assert "本次生成" in page_response.text
+    assert "operation-feedback" in page_response.text
+    assert "删除草稿" in page_response.text
+
+
+def test_delete_controls_remove_only_safe_objects(client: TestClient) -> None:
+    source_response = client.post(
+        "/api/asset-source-documents",
+        json={
+            "name": "未引用制度",
+            "source_text": "第一条 测试制度。",
+            "source_type": "policy_document",
+        },
+    )
+    document_id = source_response.json()["document"]["id"]
+
+    delete_source_response = client.delete(f"/api/asset-source-documents/{document_id}")
+    assert delete_source_response.status_code == 204
+    assert client.get(f"/api/asset-source-documents/{document_id}").status_code == 404
+
+    referenced_source_response = client.post(
+        "/api/asset-source-documents",
+        json={
+            "name": "已引用制度",
+            "source_text": "第一条 采购合同预付款原则上不得超过合同总价 25%。",
+            "source_type": "policy_document",
+        },
+    )
+    referenced_document = referenced_source_response.json()["document"]
+    draft_response = client.post(
+        "/api/rule-drafts/generate",
+        json={
+            "source_document_id": referenced_document["id"],
+            "profile_hint": {"contract_type": "procurement_contract"},
+            "draft_types": ["hard_rule"],
+        },
+    )
+    draft_asset = draft_response.json()["drafts"][0]
+
+    blocked_delete_response = client.delete(f"/api/asset-source-documents/{referenced_document['id']}")
+    assert blocked_delete_response.status_code == 400
+
+    delete_draft_response = client.delete(f"/api/assets/{draft_asset['id']}")
+    assert delete_draft_response.status_code == 204
+    assert client.get(f"/api/assets/{draft_asset['id']}").status_code == 404
+
+    allowed_delete_response = client.delete(f"/api/asset-source-documents/{referenced_document['id']}")
+    assert allowed_delete_response.status_code == 204
+
+
+def test_llm_rule_draft_generation_rejects_invalid_structured_output(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CONTRACT_COMPLIANCE_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("CONTRACT_COMPLIANCE_BOOTSTRAP_SAMPLES", "0")
+    monkeypatch.setenv("CONTRACT_COMPLIANCE_TASK_STORE_BACKEND", "json")
+    monkeypatch.setenv("CONTRACT_COMPLIANCE_OBJECT_STORAGE", "local")
+    monkeypatch.setenv("RAGFLOW_BASE_URL", "http://127.0.0.1:65530")
+    monkeypatch.setenv("LLM_API_KEY", "test-secret-value")
+    monkeypatch.setenv("LLM_PROBE_ENABLED", "0")
+    monkeypatch.setenv("CONTRACT_COMPLIANCE_LLM_DRAFT_PROVIDER", "invalid_mock")
+
+    from app.config import get_settings
+    from app.main import create_app
+
+    get_settings.cache_clear()
+    app = create_app()
+    with TestClient(app) as invalid_client:
+        response = invalid_client.post(
+            "/api/rule-drafts/generate",
+            json={
+                "source_text": "采购合同预付款不得超过 25%。",
+                "draft_types": ["hard_rule"],
+            },
+        )
+        assert response.status_code == 400
+        assert "结构化校验失败" in response.json()["detail"]
+
+        executions_response = invalid_client.get("/api/llm-executions?purpose=rule_draft")
+        assert executions_response.status_code == 200
+        executions = executions_response.json()["items"]
+        assert executions[0]["status"] == "validation_error"
+        assert executions[0]["error_detail"]
+    get_settings.cache_clear()
+
+
+def test_llm_rule_draft_validation_normalizes_common_model_variants(client: TestClient) -> None:
+    from app.services.assets import AssetRegistry
+
+    registry = AssetRegistry()
+    normalized = registry._validate_rule_draft_payload(  # noqa: SLF001
+        {
+            "drafts": [
+                {
+                    "asset_type": "hard_rule",
+                    "name": "采购合同超预算支出审批规则",
+                    "applicability": "procurement_contract",
+                    "schema_version": "rule-draft-v1",
+                    "content": {
+                        "rule_id": "HR-PROC-001",
+                        "title": "采购合同超预算支出审批规则",
+                        "level": "mandatory",
+                        "conditions": {
+                            "trigger_condition": "采购合同执行过程中发生预算外支出或超预算支出",
+                            "threshold": [
+                                {"field": "单笔支出金额", "operator": ">", "value": 0, "unit": "元"}
+                            ],
+                        },
+                        "evidence_fact_key": ["超预算申请说明", "总经理审批意见"],
+                        "policy_reference_ids": "财务管理制度_货币资金管理_授权审批规定",
+                        "reason_template": "超预算支出须有充分合理的说明和审批手续。",
+                        "action_template": "提交超预算申请并完成审批。",
+                        "source_chunks": ["source-doc-demo-chunk-001"],
+                    },
+                }
+            ]
+        },
+        selected_types=["hard_rule"],
+    )
+
+    hard_rule = normalized[0]
+    content = hard_rule["content"]
+
+    assert hard_rule["applicability"] == {"contract_type": "procurement_contract"}
+    assert content["level"] == "high"
+    assert content["conditions"] == [{"fact_key": "单笔支出金额", "operator": ">", "value": 0}]
+    assert content["evidence_fact_keys"] == ["超预算申请说明", "总经理审批意见"]
+    assert content["policy_reference_ids"] == ["财务管理制度_货币资金管理_授权审批规定"]
+    assert content["source_chunk_ids"] == ["source-doc-demo-chunk-001"]
 
 
 def test_review_profiles_and_assets_are_seeded(client: TestClient) -> None:

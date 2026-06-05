@@ -269,3 +269,20 @@ class LLMProbe(BaseModel):
     latency_ms: float | None = None
     response_preview: str | None = None
     error_detail: str | None = None
+
+
+class LLMExecutionRecord(BaseModel):
+    id: str
+    task_id: str | None = None
+    purpose: str
+    asset_id: str | None = None
+    prompt_template_id: str | None = None
+    model: str
+    input_payload: dict = Field(default_factory=dict)
+    output_payload: dict = Field(default_factory=dict)
+    raw_output_preview: str | None = None
+    status: str
+    confidence: float | None = None
+    latency_ms: float | None = None
+    created_at: str
+    error_detail: str | None = None

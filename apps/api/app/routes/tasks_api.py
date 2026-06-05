@@ -67,9 +67,10 @@ class CreateSourceDocumentRequest(BaseModel):
 
 class RuleDraftGenerateRequest(BaseModel):
     source_type: str = "policy_document"
-    source_text: str
+    source_text: str | None = None
+    source_document_id: str | None = None
     profile_hint: dict = Field(default_factory=dict)
-    draft_types: list[str] = Field(default_factory=lambda: ["hard_rule"])
+    draft_types: list[str] = Field(default_factory=lambda: ["policy_reference", "hard_rule", "semantic_rule", "extraction_rule"])
     actor: str = "reviewer"
 
 
@@ -174,6 +175,22 @@ def get_asset_source_document(document_id: str) -> dict:
     return {"document": document.model_dump()}
 
 
+@router.delete("/asset-source-documents/{document_id}", status_code=204)
+def delete_asset_source_document(document_id: str) -> None:
+    try:
+        AssetRegistry().delete_source_document(document_id)
+    except AssetNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except AssetStateError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/llm-executions")
+def list_llm_executions(purpose: str | None = None) -> dict:
+    executions = AssetRegistry().list_llm_executions(purpose=purpose)
+    return {"items": [execution.model_dump() for execution in executions], "total": len(executions)}
+
+
 @router.get("/assets/{asset_id}")
 def get_asset(asset_id: str) -> dict:
     registry = AssetRegistry()
@@ -220,6 +237,16 @@ def clone_asset(asset_id: str, payload: CloneAssetRequest) -> JSONResponse:
     return JSONResponse(status_code=201, content={"asset": asset.model_dump()})
 
 
+@router.delete("/assets/{asset_id}", status_code=204)
+def delete_asset(asset_id: str) -> None:
+    try:
+        AssetRegistry().delete_asset(asset_id)
+    except AssetNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except AssetStateError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @router.post("/assets/{asset_id}/approve")
 def approve_asset(asset_id: str, payload: AssetReviewRequest) -> dict:
     try:
@@ -258,6 +285,7 @@ def generate_rule_drafts(payload: RuleDraftGenerateRequest) -> JSONResponse:
     try:
         result = AssetRegistry().generate_rule_drafts(
             source_text=payload.source_text,
+            source_document_id=payload.source_document_id,
             source_type=payload.source_type,
             draft_types=payload.draft_types,
             profile_hint=payload.profile_hint,

@@ -111,6 +111,47 @@ class LLMClient:
             response_preview=_extract_preview(response_payload),
         )
 
+    def complete_json(
+        self,
+        *,
+        messages: list[dict[str, str]],
+        temperature: float = 0,
+        max_tokens: int = 1800,
+    ) -> dict:
+        missing_fields = self._missing_fields()
+        if missing_fields:
+            raise ValueError(f"LLM 配置不完整：{', '.join(missing_fields)}")
+
+        payload = {
+            "model": self.settings.llm_model,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            "response_format": {"type": "json_object"},
+        }
+        req = request.Request(
+            self.chat_completions_url,
+            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            headers={
+                "Authorization": f"Bearer {self.settings.llm_api_key}",
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+            },
+            method="POST",
+        )
+
+        started_at = perf_counter()
+        with request.urlopen(req, timeout=self.settings.llm_timeout_seconds) as response:
+            response_payload = json.loads(response.read().decode("utf-8"))
+
+        raw_text = _extract_chat_content(response_payload)
+        return {
+            "model": self.settings.llm_model,
+            "latency_ms": _latency_ms(started_at),
+            "raw_text": raw_text,
+            "parsed_json": _parse_json_content(raw_text),
+        }
+
     def _missing_fields(self) -> list[str]:
         missing_fields: list[str] = []
         if not self.settings.llm_base_url:
@@ -180,6 +221,37 @@ def _extract_preview(payload: dict) -> str:
             return _safe_preview(content)
 
     return "模型已返回响应，但预览内容为空。"
+
+
+def _extract_chat_content(payload: dict) -> str:
+    choices = payload.get("choices")
+    if not isinstance(choices, list) or not choices:
+        raise ValueError("LLM 响应缺少 choices。")
+    first_choice = choices[0]
+    if not isinstance(first_choice, dict):
+        raise ValueError("LLM 响应 choices[0] 结构不正确。")
+    message = first_choice.get("message")
+    if not isinstance(message, dict):
+        raise ValueError("LLM 响应缺少 message。")
+    content = message.get("content")
+    if not isinstance(content, str) or not content.strip():
+        raise ValueError("LLM 响应内容为空。")
+    return content.strip()
+
+
+def _parse_json_content(raw_text: str) -> dict:
+    cleaned = raw_text.strip()
+    if cleaned.startswith("```"):
+        cleaned = cleaned.strip("`").strip()
+        if cleaned.lower().startswith("json"):
+            cleaned = cleaned[4:].strip()
+    try:
+        parsed = json.loads(cleaned)
+    except json.JSONDecodeError as exc:
+        raise ValueError("LLM 响应不是合法 JSON。") from exc
+    if not isinstance(parsed, dict):
+        raise ValueError("LLM 响应 JSON 顶层必须是对象。")
+    return parsed
 
 
 def _safe_preview(text: str, limit: int = 180) -> str:

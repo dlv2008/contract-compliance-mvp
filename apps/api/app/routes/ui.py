@@ -222,6 +222,7 @@ def rule_drafts(
     request: Request,
     error: str | None = None,
     source_document_id: str | None = None,
+    latest_execution_id: str | None = None,
 ) -> HTMLResponse:
     registry = AssetRegistry()
     drafts = [asset.model_dump() for asset in registry.list_assets(status="draft")]
@@ -243,6 +244,10 @@ def rule_drafts(
                 "approved": approved,
                 "source_documents": [document.model_dump(exclude={"content_text"}) for document in source_documents],
                 "selected_source_document": selected_source_document,
+                "llm_executions": [
+                    execution.model_dump() for execution in registry.list_llm_executions(purpose="rule_draft")[:5]
+                ],
+                "latest_execution_id": latest_execution_id,
                 "profiles": [profile.model_dump() for profile in registry.list_profiles(status=None)],
                 "error": error,
             },
@@ -276,25 +281,52 @@ async def create_asset_source_document_form(
     return RedirectResponse(url=f"/rule-drafts?source_document_id={document.id}", status_code=303)
 
 
+@router.post("/asset-source-documents/{document_id}/delete")
+def delete_asset_source_document_form(document_id: str) -> RedirectResponse:
+    try:
+        AssetRegistry().delete_source_document(document_id)
+    except (AssetNotFoundError, AssetStateError) as exc:
+        return _redirect_with_asset_error("/rule-drafts", exc)
+    return RedirectResponse(url="/rule-drafts", status_code=303)
+
+
 @router.post("/rule-drafts/generate")
 def generate_rule_drafts_form(
-    source_text: str = Form(...),
+    source_text: str | None = Form(default=None),
+    source_document_id: str | None = Form(default=None),
     contract_type: str = Form(default="procurement_contract"),
+    include_policy_reference: bool = Form(default=False),
     include_semantic_rule: bool = Form(default=False),
-    include_message_template: bool = Form(default=False),
+    include_extraction_rule: bool = Form(default=False),
 ) -> RedirectResponse:
     draft_types = ["hard_rule"]
+    if include_policy_reference:
+        draft_types.insert(0, "policy_reference")
     if include_semantic_rule:
         draft_types.append("semantic_rule")
-    if include_message_template:
-        draft_types.append("risk_message_template")
+    if include_extraction_rule:
+        draft_types.append("extraction_rule")
     try:
-        AssetRegistry().generate_rule_drafts(
+        result = AssetRegistry().generate_rule_drafts(
             source_text=source_text,
+            source_document_id=source_document_id or None,
             profile_hint={"contract_type": contract_type},
             draft_types=draft_types,
         )
     except AssetStateError as exc:
+        return _redirect_with_asset_error("/rule-drafts", exc)
+    params = []
+    if source_document_id:
+        params.append(f"source_document_id={source_document_id}")
+    params.append(f"latest_execution_id={result['llm_execution']['id']}")
+    return RedirectResponse(url=f"/rule-drafts?{'&'.join(params)}", status_code=303)
+
+
+@router.post("/assets/{asset_id}/delete")
+def delete_asset_form(asset_id: str) -> RedirectResponse:
+    try:
+        AssetRegistry().delete_asset(asset_id)
+    except (AssetNotFoundError, AssetStateError) as exc:
         return _redirect_with_asset_error("/rule-drafts", exc)
     return RedirectResponse(url="/rule-drafts", status_code=303)
 

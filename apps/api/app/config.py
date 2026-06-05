@@ -140,6 +140,7 @@ class Settings:
     llm_model: str
     llm_timeout_seconds: float
     llm_probe_enabled: bool
+    llm_draft_provider: str
 
 
 @lru_cache(maxsize=1)
@@ -188,6 +189,7 @@ def get_settings() -> Settings:
     llm_model = _setting("LLM_MODEL", "I2AI/minimax-m2.5")
     llm_timeout_seconds = float(_setting("LLM_TIMEOUT_SECONDS", "15"))
     llm_probe_enabled = _flag("LLM_PROBE_ENABLED", False)
+    llm_draft_provider = _setting("CONTRACT_COMPLIANCE_LLM_DRAFT_PROVIDER", "auto").strip().lower()
     return Settings(
         data_dir=data_dir,
         upload_dir=upload_dir,
@@ -215,4 +217,5 @@ def get_settings() -> Settings:
         llm_model=llm_model,
         llm_timeout_seconds=llm_timeout_seconds,
         llm_probe_enabled=llm_probe_enabled,
+        llm_draft_provider=llm_draft_provider,
     )

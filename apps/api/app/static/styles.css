@@ -1478,6 +1478,78 @@ a {
     white-space: pre-wrap;
 }
 
+.operation-feedback {
+    display: none;
+    padding: 12px 14px;
+    border: 1px solid rgba(47, 124, 99, 0.24);
+    border-radius: var(--radius-sm);
+    background: rgba(47, 124, 99, 0.08);
+    color: var(--ok);
+}
+
+.operation-feedback[hidden] {
+    display: none;
+}
+
+.operation-feedback.is-visible {
+    display: grid;
+    gap: 8px;
+}
+
+.operation-feedback p {
+    margin: 0;
+    color: var(--ok);
+}
+
+.progress-track {
+    position: relative;
+    height: 6px;
+    overflow: hidden;
+    border-radius: 999px;
+    background: rgba(47, 124, 99, 0.18);
+}
+
+.progress-track span {
+    position: absolute;
+    inset: 0 auto 0 0;
+    width: 42%;
+    border-radius: inherit;
+    background: var(--ok);
+    animation: progress-slide 1.2s ease-in-out infinite;
+}
+
+.latest-card {
+    border-color: rgba(36, 118, 93, 0.46);
+    background: rgba(36, 118, 93, 0.07);
+}
+
+.latest-pill {
+    background: rgba(36, 118, 93, 0.14);
+    color: var(--ok);
+}
+
+.danger-action {
+    color: var(--danger);
+    border-color: rgba(186, 61, 54, 0.24);
+}
+
+button:disabled {
+    cursor: progress;
+    opacity: 0.72;
+}
+
+@keyframes progress-slide {
+    0% {
+        transform: translateX(-100%);
+    }
+    55% {
+        transform: translateX(120%);
+    }
+    100% {
+        transform: translateX(240%);
+    }
+}
+
 @media (max-width: 1120px) {
     .metric-grid {
         grid-template-columns: repeat(2, minmax(0, 1fr));

@@ -11,7 +11,15 @@ from typing import Any, Protocol
 from pydantic import ValidationError
 
 from app.config import Settings, get_settings
-from app.models import AssetSourceChunk, AssetSourceDocument, ConfigAsset, ReviewProfile, ReviewProfileAssetRef
+from app.models import (
+    AssetSourceChunk,
+    AssetSourceDocument,
+    ConfigAsset,
+    LLMExecutionRecord,
+    ReviewProfile,
+    ReviewProfileAssetRef,
+)
+from app.services.llm import LLMClient
 
 
 BASIC_PROFILE_ID = "profile-basic-contract-review-v1"
@@ -30,6 +38,13 @@ SINGLETON_ASSET_TYPES = {
 }
 
 ASSET_EXECUTION_STATUS = {
+    "policy_reference": {
+        "status": "planned",
+        "label": "来源类资产",
+        "tone": "muted",
+        "summary": "制度依据资产用于规则溯源和报告引用，不直接参与合同审查执行。",
+        "next_step": "Step 4/5：由 LLM 生成草稿并在资产编辑器中审核来源引用。",
+    },
     "clause_parse_template": {
         "status": "partially_implemented",
         "label": "部分接入",
@@ -170,6 +185,35 @@ class JsonAssetSourceDocumentStore:
         self.state_path.parent.mkdir(parents=True, exist_ok=True)
         temp_path = self.state_path.with_suffix(".tmp")
         payload = {"documents": [document.model_dump() for document in documents]}
+        temp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        temp_path.replace(self.state_path)
+
+
+class LLMExecutionStore(Protocol):
+    def load_executions(self) -> list[LLMExecutionRecord]:
+        pass
+
+    def save_executions(self, executions: list[LLMExecutionRecord]) -> None:
+        pass
+
+
+class JsonLLMExecutionStore:
+    def __init__(self, state_path: Path) -> None:
+        self.state_path = state_path
+
+    def load_executions(self) -> list[LLMExecutionRecord]:
+        if not self.state_path.exists():
+            self.save_executions([])
+        try:
+            payload = json.loads(self.state_path.read_text(encoding="utf-8"))
+            return [LLMExecutionRecord.model_validate(item) for item in payload.get("executions", [])]
+        except (OSError, json.JSONDecodeError, ValidationError) as exc:
+            raise AssetStateError("LLM 执行记录仓库无法读取。") from exc
+
+    def save_executions(self, executions: list[LLMExecutionRecord]) -> None:
+        self.state_path.parent.mkdir(parents=True, exist_ok=True)
+        temp_path = self.state_path.with_suffix(".tmp")
+        payload = {"executions": [execution.model_dump() for execution in executions]}
         temp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         temp_path.replace(self.state_path)
 
@@ -750,12 +794,18 @@ class AssetRegistry:
         settings: Settings | None = None,
         store: AssetStore | None = None,
         source_store: AssetSourceDocumentStore | None = None,
+        llm_execution_store: LLMExecutionStore | None = None,
+        llm_client: LLMClient | None = None,
     ) -> None:
         self.settings = settings or get_settings()
         self.store = store or JsonAssetStore(self.settings.data_dir / "assets.json")
         self.source_store = source_store or JsonAssetSourceDocumentStore(
             self.settings.data_dir / "asset_source_documents.json"
         )
+        self.llm_execution_store = llm_execution_store or JsonLLMExecutionStore(
+            self.settings.data_dir / "llm_executions.json"
+        )
+        self.llm_client = llm_client or LLMClient(self.settings)
 
     def list_source_documents(self, *, q: str | None = None) -> list[AssetSourceDocument]:
         documents = self.source_store.load_documents()
@@ -773,6 +823,22 @@ class AssetRegistry:
         if document is None:
             raise AssetNotFoundError("制度来源文档不存在。")
         return document
+
+    def delete_source_document(self, document_id: str) -> None:
+        documents = self.source_store.load_documents()
+        document = next((item for item in documents if item.id == document_id), None)
+        if document is None:
+            raise AssetNotFoundError("制度来源文档不存在。")
+        assets, _ = self._load_state()
+        referenced_assets = [
+            asset
+            for asset in assets
+            if asset.content.get("source_document_id") == document_id
+            and asset.status not in {"rejected"}
+        ]
+        if referenced_assets:
+            raise AssetStateError("该来源文档已被资产草稿引用，不能直接删除。请先处理或删除相关草稿。")
+        self.source_store.save_documents([item for item in documents if item.id != document_id])
 
     def create_source_document(
         self,
@@ -810,6 +876,21 @@ class AssetRegistry:
         documents.append(document)
         self.source_store.save_documents(documents)
         return document
+
+    def list_llm_executions(self, *, purpose: str | None = None) -> list[LLMExecutionRecord]:
+        executions = self.llm_execution_store.load_executions()
+        if purpose:
+            executions = [item for item in executions if item.purpose == purpose]
+        return sorted(executions, key=lambda item: item.created_at, reverse=True)
+
+    def delete_asset(self, asset_id: str) -> None:
+        assets, profiles = self._load_state()
+        asset = next((item for item in assets if item.id == asset_id), None)
+        if asset is None:
+            raise AssetNotFoundError("配置资产不存在。")
+        if asset.status not in {"draft", "rejected"}:
+            raise AssetStateError("只能删除 draft 或 rejected 状态的资产。approved/active 资产请走驳回、发布或版本化流程。")
+        self._save_state([item for item in assets if item.id != asset_id], profiles)
 
     def list_assets(
         self,
@@ -917,104 +998,503 @@ class AssetRegistry:
     def generate_rule_drafts(
         self,
         *,
-        source_text: str,
+        source_text: str | None = None,
+        source_document_id: str | None = None,
         source_type: str = "policy_document",
         draft_types: list[str] | None = None,
         profile_hint: dict | None = None,
         actor: str = "reviewer",
     ) -> dict:
-        if not source_text.strip():
+        document: AssetSourceDocument | None = None
+        resolved_source_text = (source_text or "").strip()
+        if source_document_id:
+            document = self.get_source_document(source_document_id)
+            resolved_source_text = resolved_source_text or document.content_text
+            source_type = document.source_type
+        if not resolved_source_text:
             raise AssetStateError("制度文档内容不能为空。")
-        selected_types = draft_types or ["hard_rule"]
-        drafts: list[ConfigAsset] = []
+        selected_types = draft_types or ["policy_reference", "hard_rule", "semantic_rule", "extraction_rule"]
         contract_type = (profile_hint or {}).get("contract_type") or "procurement_contract"
-        threshold = self._extract_percent_threshold(source_text) or 30
-        if "hard_rule" in selected_types:
-            rule_id = "FIN-PUR-003" if contract_type == "procurement_contract" else "FIN-SVC-003"
-            title = (
-                f"采购预付款比例超过 {threshold}%"
-                if contract_type == "procurement_contract"
-                else f"服务预付款比例超过 {threshold}%"
+        chunks = (
+            document.chunks
+            if document
+            else self._split_source_document(f"inline-source-{uuid.uuid4().hex[:8]}", resolved_source_text)
+        )
+        prompt_template = self._active_prompt_template("rule_draft")
+        execution_id = f"llm-draft-{uuid.uuid4().hex[:10]}"
+        input_payload = {
+            "source_document_id": document.id if document else None,
+            "source_content_hash": document.content_hash if document else compute_source_text_hash(resolved_source_text),
+            "source_type": source_type,
+            "contract_type": contract_type,
+            "draft_types": selected_types,
+            "chunks": [chunk.model_dump() for chunk in chunks],
+            "prompt_template_id": prompt_template.id if prompt_template else None,
+        }
+        provider = self.settings.llm_draft_provider
+        raw_output_preview = None
+        latency_ms = None
+        error_detail = None
+        status = "success"
+        model = self.settings.llm_model
+
+        try:
+            if provider == "invalid_mock":
+                llm_payload = self._invalid_llm_rule_draft_payload()
+                raw_output_preview = json.dumps(llm_payload, ensure_ascii=False)[:500]
+                model = "invalid-mock-draft-generator"
+            elif provider == "mock" or (provider == "auto" and not self.settings.llm_api_key):
+                llm_payload = self._mock_llm_rule_draft_payload(
+                    source_text=resolved_source_text,
+                    chunks=chunks,
+                    selected_types=selected_types,
+                    contract_type=contract_type,
+                    source_type=source_type,
+                )
+                raw_output_preview = json.dumps(llm_payload, ensure_ascii=False)[:500]
+                model = "mock-draft-generator"
+                status = "mock_success"
+            else:
+                llm_result = self.llm_client.complete_json(
+                    messages=self._build_rule_draft_messages(
+                        prompt_template=prompt_template,
+                        source_text=resolved_source_text,
+                        chunks=chunks,
+                        selected_types=selected_types,
+                        contract_type=contract_type,
+                    )
+                )
+                llm_payload = llm_result["parsed_json"]
+                raw_output_preview = llm_result["raw_text"][:500]
+                latency_ms = llm_result["latency_ms"]
+                model = llm_result["model"]
+        except Exception as exc:  # noqa: BLE001
+            if provider != "auto":
+                self._record_llm_execution(
+                    execution_id=execution_id,
+                    prompt_template_id=prompt_template.id if prompt_template else None,
+                    model=model,
+                    input_payload=input_payload,
+                    output_payload={},
+                    raw_output_preview=raw_output_preview,
+                    status="error",
+                    latency_ms=latency_ms,
+                    error_detail=str(exc),
+                )
+                raise AssetStateError("LLM 草稿生成失败，请检查模型配置或稍后重试。") from exc
+            error_detail = str(exc)
+            llm_payload = self._mock_llm_rule_draft_payload(
+                source_text=resolved_source_text,
+                chunks=chunks,
+                selected_types=selected_types,
+                contract_type=contract_type,
+                source_type=source_type,
             )
+            raw_output_preview = json.dumps(llm_payload, ensure_ascii=False)[:500]
+            model = "mock-draft-generator"
+            status = "mock_fallback"
+
+        try:
+            draft_specs = self._validate_rule_draft_payload(llm_payload, selected_types=selected_types)
+        except AssetStateError as exc:
+            self._record_llm_execution(
+                execution_id=execution_id,
+                prompt_template_id=prompt_template.id if prompt_template else None,
+                model=model,
+                input_payload=input_payload,
+                output_payload=llm_payload if isinstance(llm_payload, dict) else {},
+                raw_output_preview=raw_output_preview,
+                status="validation_error",
+                latency_ms=latency_ms,
+                error_detail=str(exc),
+            )
+            raise AssetStateError("LLM 输出结构化校验失败，未生成草稿资产。") from exc
+
+        drafts = self._create_drafts_from_specs(
+            draft_specs,
+            actor=actor,
+            contract_type=contract_type,
+            execution_id=execution_id,
+            prompt_template_id=prompt_template.id if prompt_template else None,
+            source_document=document,
+            source_text=resolved_source_text,
+            source_type=source_type,
+        )
+        execution = self._record_llm_execution(
+            execution_id=execution_id,
+            prompt_template_id=prompt_template.id if prompt_template else None,
+            model=model,
+            input_payload=input_payload,
+            output_payload=llm_payload,
+            raw_output_preview=raw_output_preview,
+            status=status,
+            latency_ms=latency_ms,
+            error_detail=error_detail,
+        )
+        return {"drafts": drafts, "llm_execution": execution.model_dump()}
+
+    def _active_prompt_template(self, purpose: str) -> ConfigAsset | None:
+        assets, _ = self._load_state()
+        return next(
+            (
+                asset
+                for asset in assets
+                if asset.asset_type == "prompt_template"
+                and asset.status == "active"
+                and asset.content.get("purpose") == purpose
+            ),
+            None,
+        )
+
+    def _build_rule_draft_messages(
+        self,
+        *,
+        prompt_template: ConfigAsset | None,
+        source_text: str,
+        chunks: list[AssetSourceChunk],
+        selected_types: list[str],
+        contract_type: str,
+    ) -> list[dict[str, str]]:
+        chunk_text = "\n\n".join(
+            f"[{chunk.id}] {chunk.title}\n{chunk.text}" for chunk in chunks[:12]
+        )
+        template_hint = json.dumps(prompt_template.content if prompt_template else {}, ensure_ascii=False)
+        return [
+            {
+                "role": "system",
+                "content": (
+                    "你是企业合同合规审查配置资产生成助手。"
+                    "请只输出合法 JSON 对象，不要输出 Markdown。"
+                    "输出格式必须为 {\"drafts\": [...]}。"
+                    "drafts 中每个对象包含 asset_type, name, applicability, schema_version, content, description。"
+                    "首批允许的 asset_type 为 policy_reference, hard_rule, semantic_rule, extraction_rule。"
+                    "hard_rule.content 必须包含 rule_id, title, level, conditions, evidence_fact_keys, "
+                    "policy_reference_ids, reason_template, action_template。"
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"Prompt 模板资产内容：{template_hint}\n"
+                    f"适用合同类型：{contract_type}\n"
+                    f"需要生成的资产类型：{', '.join(selected_types)}\n"
+                    f"来源 chunks：\n{chunk_text}\n\n"
+                    f"完整来源文本：\n{source_text[:6000]}"
+                ),
+            },
+        ]
+
+    def _mock_llm_rule_draft_payload(
+        self,
+        *,
+        source_text: str,
+        chunks: list[AssetSourceChunk],
+        selected_types: list[str],
+        contract_type: str,
+        source_type: str,
+    ) -> dict:
+        threshold = self._extract_percent_threshold(source_text) or 30
+        first_chunk_ids = [chunk.id for chunk in chunks[:2]]
+        policy_reference_id = "POLICY-DRAFT-001"
+        rule_id = "FIN-PUR-003" if contract_type == "procurement_contract" else "FIN-SVC-003"
+        rule_title = (
+            f"采购预付款比例超过 {threshold}%"
+            if contract_type == "procurement_contract"
+            else f"服务预付款比例超过 {threshold}%"
+        )
+        drafts = []
+        if "policy_reference" in selected_types:
             drafts.append(
-                self.create_asset_draft(
-                    asset_type="hard_rule",
-                    name=f"制度草稿：预付款比例超过 {threshold}% 控制",
-                    applicability={"contract_type": contract_type},
-                    content={
+                {
+                    "asset_type": "policy_reference",
+                    "name": f"制度依据草稿：预付款 {threshold}% 控制",
+                    "applicability": {"contract_type": contract_type},
+                    "schema_version": "policy-reference-v1",
+                    "description": "由来源文档生成的制度依据草稿，用于规则溯源。",
+                    "content": {
+                        "reference_id": policy_reference_id,
+                        "title": f"预付款比例不得超过 {threshold}%",
+                        "summary": source_text.strip()[:240],
+                        "source_chunk_ids": first_chunk_ids,
+                        "source_type": source_type,
+                    },
+                }
+            )
+        if "hard_rule" in selected_types:
+            drafts.append(
+                {
+                    "asset_type": "hard_rule",
+                    "name": f"制度草稿：预付款比例超过 {threshold}% 控制",
+                    "applicability": {"contract_type": contract_type},
+                    "schema_version": "hard-rule-v2",
+                    "description": "由 LLM 草稿生成链路生成的硬规则草稿，审核发布并绑定配置集后才会生效。",
+                    "content": {
                         "rule_id": rule_id,
-                        "title": title,
+                        "title": rule_title,
                         "level": "high" if contract_type == "procurement_contract" else "medium",
                         "conditions": [
                             {"fact_key": "payment.prepay_ratio", "operator": ">", "value": threshold}
                         ],
-                        "evidence_fact_keys": ["payment.prepay_ratio"],
-                        "policy_reference_ids": ["POLICY-PUR-002", "POLICY-FUND-006"]
-                        if contract_type == "procurement_contract"
-                        else ["POLICY-FUND-003"],
-                        "reason_template": (
-                            "合同约定预付款比例为 {payment.prepay_ratio}，"
-                            "已超过配置资产 {asset_id} 设定的 {threshold}% 阈值。"
-                        ),
-                        "action_template": (
-                            "将预付款比例降至 {threshold}% 以内，或补充例外审批说明。"
-                        ),
                         "fact_key": "payment.prepay_ratio",
                         "operator": ">",
                         "value": threshold,
-                        "risk_level": "high",
-                        "policy_reference": source_text.strip()[:240],
-                        "source_type": source_type,
+                        "risk_level": "high" if contract_type == "procurement_contract" else "medium",
+                        "evidence_fact_keys": ["payment.prepay_ratio"],
+                        "policy_reference_ids": [policy_reference_id],
+                        "reason_template": (
+                            "合同约定预付款比例为 {payment.prepay_ratio}，"
+                            f"已超过制度草稿设定的 {threshold}% 阈值。"
+                        ),
+                        "action_template": (
+                            f"将预付款比例降至 {threshold}% 以内，或补充例外审批说明。"
+                        ),
+                        "source_chunk_ids": first_chunk_ids,
                     },
-                    schema_version="hard-rule-v1",
-                    description="由制度文档生成的硬规则草稿，审核发布并绑定配置集后才会生效。",
-                    actor=actor,
-                )
+                }
             )
         if "semantic_rule" in selected_types:
             drafts.append(
-                self.create_asset_draft(
-                    asset_type="semantic_rule",
-                    name="制度草稿：语义审查关注项",
-                    applicability={"contract_type": contract_type},
-                    content={
+                {
+                    "asset_type": "semantic_rule",
+                    "name": "制度草稿：例外审批材料语义检查",
+                    "applicability": {"contract_type": contract_type},
+                    "schema_version": "semantic-rule-v1",
+                    "description": "由 LLM 草稿生成链路生成的语义规则草稿。",
+                    "content": {
                         "prompt_template_id": "asset-prompt-semantic-rule-v1",
+                        "question": "当合同预付款超过制度阈值时，是否补充了采购和财务例外审批材料？",
                         "output_schema": "semantic-rule-result-v1",
-                        "policy_reference": source_text.strip()[:240],
-                        "source_type": source_type,
+                        "policy_reference_ids": [policy_reference_id],
+                        "source_chunk_ids": first_chunk_ids,
                     },
-                    schema_version="semantic-rule-v1",
-                    description="由制度文档生成的语义规则草稿。",
-                    actor=actor,
-                )
+                }
             )
-        if "risk_message_template" in selected_types:
+        if "extraction_rule" in selected_types:
+            drafts.append(
+                {
+                    "asset_type": "extraction_rule",
+                    "name": "制度草稿：预付款比例提取规则",
+                    "applicability": {"contract_type": contract_type},
+                    "schema_version": "extraction-rule-v1",
+                    "description": "由 LLM 草稿生成链路生成的字段提取规则草稿。",
+                    "content": {
+                        "fact_key": "payment.prepay_ratio",
+                        "label": "预付款比例",
+                        "patterns": ["预付款", "支付合同总价"],
+                        "value_type": "percent",
+                        "source_chunk_ids": first_chunk_ids,
+                    },
+                }
+            )
+        return {"drafts": drafts}
+
+    def _invalid_llm_rule_draft_payload(self) -> dict:
+        return {
+            "drafts": [
+                {
+                    "asset_type": "hard_rule",
+                    "name": "",
+                    "content": {"conditions": "not-a-list"},
+                }
+            ]
+        }
+
+    def _validate_rule_draft_payload(self, payload: dict, *, selected_types: list[str]) -> list[dict]:
+        if not isinstance(payload, dict):
+            raise AssetStateError("LLM 输出顶层必须是对象。")
+        drafts = payload.get("drafts")
+        if not isinstance(drafts, list):
+            raise AssetStateError("LLM 输出缺少 drafts 数组。")
+        allowed_types = {"policy_reference", "hard_rule", "semantic_rule", "extraction_rule"}
+        selected = set(selected_types)
+        valid_drafts = []
+        for draft in drafts:
+            if not isinstance(draft, dict):
+                raise AssetStateError("drafts 中存在非对象元素。")
+            draft = self._normalize_llm_draft_spec(draft)
+            asset_type = draft.get("asset_type")
+            if asset_type not in allowed_types:
+                raise AssetStateError(f"不支持的草稿资产类型：{asset_type}。")
+            if asset_type not in selected:
+                continue
+            name = draft.get("name")
+            content = draft.get("content")
+            if not isinstance(name, str) or not name.strip():
+                raise AssetStateError("草稿资产缺少 name。")
+            if not isinstance(content, dict):
+                raise AssetStateError("草稿资产缺少 content 对象。")
+            if asset_type == "hard_rule":
+                self._validate_hard_rule_draft_content(content)
+            valid_drafts.append(draft)
+        if not valid_drafts:
+            raise AssetStateError("LLM 输出没有可生成的草稿资产。")
+        return valid_drafts
+
+    def _normalize_llm_draft_spec(self, draft: dict) -> dict:
+        normalized = dict(draft)
+        applicability = normalized.get("applicability")
+        if isinstance(applicability, str):
+            normalized["applicability"] = {"contract_type": applicability}
+        elif not isinstance(applicability, dict):
+            normalized["applicability"] = {}
+
+        content = normalized.get("content")
+        if not isinstance(content, dict):
+            return normalized
+        normalized_content = dict(content)
+
+        if "source_chunks" in normalized_content and "source_chunk_ids" not in normalized_content:
+            normalized_content["source_chunk_ids"] = normalized_content["source_chunks"]
+        if "evidence_fact_key" in normalized_content and "evidence_fact_keys" not in normalized_content:
+            normalized_content["evidence_fact_keys"] = normalized_content["evidence_fact_key"]
+        if isinstance(normalized_content.get("evidence_fact_keys"), str):
+            normalized_content["evidence_fact_keys"] = [normalized_content["evidence_fact_keys"]]
+        if isinstance(normalized_content.get("policy_reference_ids"), str):
+            normalized_content["policy_reference_ids"] = [normalized_content["policy_reference_ids"]]
+
+        if normalized.get("asset_type") == "hard_rule":
+            normalized_content = self._normalize_hard_rule_content(normalized_content)
+
+        normalized["content"] = normalized_content
+        return normalized
+
+    def _normalize_hard_rule_content(self, content: dict) -> dict:
+        normalized = dict(content)
+        level = str(normalized.get("level") or normalized.get("risk_level") or "medium").lower()
+        if level in {"mandatory", "required", "critical", "严重", "强制"}:
+            normalized["level"] = "high"
+
+        raw_conditions = normalized.get("conditions")
+        if isinstance(raw_conditions, dict):
+            threshold_items = raw_conditions.get("threshold")
+            if isinstance(threshold_items, list):
+                normalized["conditions"] = [
+                    self._normalize_condition_item(item)
+                    for item in threshold_items
+                    if isinstance(item, dict)
+                ]
+            else:
+                trigger_condition = raw_conditions.get("trigger_condition")
+                if trigger_condition:
+                    normalized["semantic_condition"] = trigger_condition
+                normalized["conditions"] = []
+
+        if not normalized.get("conditions") and normalized.get("fact_key"):
+            normalized["conditions"] = [
+                {
+                    "fact_key": normalized.get("fact_key"),
+                    "operator": normalized.get("operator") or "is",
+                    "value": normalized.get("value"),
+                }
+            ]
+
+        if not normalized.get("evidence_fact_keys"):
+            fact_keys = [
+                str(condition.get("fact_key"))
+                for condition in normalized.get("conditions", [])
+                if isinstance(condition, dict) and condition.get("fact_key")
+            ]
+            normalized["evidence_fact_keys"] = fact_keys
+
+        return normalized
+
+    def _normalize_condition_item(self, item: dict) -> dict:
+        fact_key = item.get("fact_key") or item.get("target_field") or item.get("field") or "payment.amount"
+        return {
+            "fact_key": str(fact_key),
+            "operator": item.get("operator") or ">",
+            "value": item.get("value"),
+        }
+
+    def _validate_hard_rule_draft_content(self, content: dict) -> None:
+        required_keys = {
+            "rule_id",
+            "title",
+            "level",
+            "conditions",
+            "evidence_fact_keys",
+            "policy_reference_ids",
+            "reason_template",
+            "action_template",
+        }
+        missing = sorted(key for key in required_keys if key not in content)
+        if missing:
+            raise AssetStateError(f"hard_rule 草稿缺少字段：{', '.join(missing)}。")
+        if not isinstance(content["conditions"], list) or not content["conditions"]:
+            raise AssetStateError("hard_rule.conditions 必须是非空数组。")
+        for condition in content["conditions"]:
+            if not isinstance(condition, dict):
+                raise AssetStateError("hard_rule.conditions 中存在非对象条件。")
+            for key in ["fact_key", "operator", "value"]:
+                if key not in condition:
+                    raise AssetStateError(f"hard_rule 条件缺少 {key}。")
+
+    def _create_drafts_from_specs(
+        self,
+        draft_specs: list[dict],
+        *,
+        actor: str,
+        contract_type: str,
+        execution_id: str,
+        prompt_template_id: str | None,
+        source_document: AssetSourceDocument | None,
+        source_text: str,
+        source_type: str,
+    ) -> list[ConfigAsset]:
+        drafts = []
+        source_content_hash = source_document.content_hash if source_document else compute_source_text_hash(source_text)
+        for spec in draft_specs:
+            content = {
+                **spec["content"],
+                "source_type": source_type,
+                "source_document_id": source_document.id if source_document else None,
+                "source_content_hash": source_content_hash,
+                "llm_execution_id": execution_id,
+                "prompt_template_id": prompt_template_id,
+            }
             drafts.append(
                 self.create_asset_draft(
-                    asset_type="risk_message_template",
-                    name="制度草稿：风险提示模板",
-                    applicability={"contract_type": contract_type},
-                    content={
-                        "template": "{rule_title}: {reason} 建议：{action}",
-                        "source_type": source_type,
-                        "policy_reference": source_text.strip()[:240],
-                    },
-                    schema_version="risk-message-template-v1",
-                    description="由制度文档生成的提示模板草稿。",
+                    asset_type=spec["asset_type"],
+                    name=spec["name"],
+                    applicability=spec.get("applicability") or {"contract_type": contract_type},
+                    content=content,
+                    schema_version=spec.get("schema_version"),
+                    description=spec.get("description"),
                     actor=actor,
                 )
             )
-        return {
-            "drafts": drafts,
-            "llm_execution": {
-                "id": f"llm-draft-{uuid.uuid4().hex[:10]}",
-                "purpose": "rule_draft",
-                "status": "success",
-                "model": "deterministic-draft-generator",
-                "created_at": utc_now(),
-                "source_type": source_type,
-            },
-        }
+        return drafts
+
+    def _record_llm_execution(
+        self,
+        *,
+        execution_id: str,
+        prompt_template_id: str | None,
+        model: str,
+        input_payload: dict,
+        output_payload: dict,
+        raw_output_preview: str | None,
+        status: str,
+        latency_ms: float | None,
+        error_detail: str | None,
+    ) -> LLMExecutionRecord:
+        execution = LLMExecutionRecord(
+            id=execution_id,
+            purpose="rule_draft",
+            prompt_template_id=prompt_template_id,
+            model=model,
+            input_payload=input_payload,
+            output_payload=output_payload,
+            raw_output_preview=raw_output_preview,
+            status=status,
+            latency_ms=latency_ms,
+            created_at=utc_now(),
+            error_detail=error_detail,
+        )
+        executions = self.llm_execution_store.load_executions()
+        executions.append(execution)
+        self.llm_execution_store.save_executions(executions)
+        return execution
 
     def approve_asset(self, asset_id: str, *, actor: str = "reviewer", comment: str | None = None) -> ConfigAsset:
         return self._transition_asset(
@@ -1323,6 +1803,7 @@ class AssetRegistry:
 
     def asset_types(self) -> list[str]:
         return [
+            "policy_reference",
             "clause_parse_template",
             "extraction_schema",
             "extraction_rule",
