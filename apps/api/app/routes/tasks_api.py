@@ -57,6 +57,14 @@ class CloneAssetRequest(BaseModel):
     actor: str = "reviewer"
 
 
+class UpdateAssetDraftRequest(BaseModel):
+    name: str | None = None
+    description: str | None = None
+    applicability: dict | None = None
+    content: dict | None = None
+    schema_version: str | None = None
+
+
 class CreateSourceDocumentRequest(BaseModel):
     name: str
     source_text: str
@@ -245,6 +253,24 @@ def delete_asset(asset_id: str) -> None:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except AssetStateError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.patch("/assets/{asset_id}")
+def update_asset_draft(asset_id: str, payload: UpdateAssetDraftRequest) -> dict:
+    try:
+        asset = AssetRegistry().update_asset_draft(
+            asset_id,
+            name=payload.name,
+            description=payload.description,
+            applicability=payload.applicability,
+            content=payload.content,
+            schema_version=payload.schema_version,
+        )
+    except AssetNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except AssetStateError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"asset": asset.model_dump()}
 
 
 @router.post("/assets/{asset_id}/approve")

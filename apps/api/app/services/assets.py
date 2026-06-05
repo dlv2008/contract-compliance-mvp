@@ -892,6 +892,67 @@ class AssetRegistry:
             raise AssetStateError("只能删除 draft 或 rejected 状态的资产。approved/active 资产请走驳回、发布或版本化流程。")
         self._save_state([item for item in assets if item.id != asset_id], profiles)
 
+    def update_asset_draft(
+        self,
+        asset_id: str,
+        *,
+        name: str | None = None,
+        description: str | None = None,
+        applicability: dict | None = None,
+        content: dict | None = None,
+        schema_version: str | None = None,
+    ) -> ConfigAsset:
+        assets, profiles = self._load_state()
+        asset = next((item for item in assets if item.id == asset_id), None)
+        if asset is None:
+            raise AssetNotFoundError("配置资产不存在。")
+        if asset.status != "draft":
+            raise AssetStateError("只能编辑 draft 状态的资产。")
+
+        resolved_applicability = applicability if applicability is not None else dict(asset.applicability)
+        resolved_content = content if content is not None else dict(asset.content)
+        resolved_schema_version = schema_version or asset.schema_version
+        candidate = asset.model_copy(
+            update={
+                "name": name or asset.name,
+                "description": description if description is not None else asset.description,
+                "applicability": resolved_applicability,
+                "content": resolved_content,
+                "schema_version": resolved_schema_version,
+                "content_hash": compute_asset_content_hash(
+                    asset_type=asset.asset_type,
+                    applicability=resolved_applicability,
+                    content=resolved_content,
+                    schema_version=resolved_schema_version,
+                ),
+                "updated_at": utc_now(),
+            }
+        )
+        self.validate_asset_draft(candidate)
+        self._save_state([candidate if item.id == asset_id else item for item in assets], profiles)
+        return candidate
+
+    def validate_asset_draft(self, asset: ConfigAsset) -> list[str]:
+        errors: list[str] = []
+        if not asset.name.strip():
+            errors.append("资产名称不能为空。")
+        if not isinstance(asset.applicability, dict):
+            errors.append("适用性必须是 JSON 对象。")
+        if not isinstance(asset.content, dict):
+            errors.append("内容必须是 JSON 对象。")
+        if errors:
+            raise AssetStateError("；".join(errors))
+
+        if asset.asset_type == "hard_rule":
+            self._validate_hard_rule_draft_content(asset.content)
+        elif asset.asset_type == "semantic_rule":
+            self._validate_semantic_rule_content(asset.content)
+        elif asset.asset_type == "extraction_rule":
+            self._validate_extraction_rule_content(asset.content)
+        elif asset.asset_type == "policy_reference":
+            self._validate_policy_reference_content(asset.content)
+        return errors
+
     def list_assets(
         self,
         *,
@@ -1429,6 +1490,18 @@ class AssetRegistry:
                 if key not in condition:
                     raise AssetStateError(f"hard_rule 条件缺少 {key}。")
 
+    def _validate_semantic_rule_content(self, content: dict) -> None:
+        if not any(content.get(key) for key in ["question", "semantic_definitions", "validation_rules"]):
+            raise AssetStateError("semantic_rule 草稿至少需要 question、semantic_definitions 或 validation_rules。")
+
+    def _validate_extraction_rule_content(self, content: dict) -> None:
+        if not any(content.get(key) for key in ["fact_key", "patterns", "extraction_targets"]):
+            raise AssetStateError("extraction_rule 草稿至少需要 fact_key/patterns 或 extraction_targets。")
+
+    def _validate_policy_reference_content(self, content: dict) -> None:
+        if not any(content.get(key) for key in ["reference_id", "title", "summary", "reference_items"]):
+            raise AssetStateError("policy_reference 草稿至少需要 reference_id、title、summary 或 reference_items。")
+
     def _create_drafts_from_specs(
         self,
         draft_specs: list[dict],
@@ -1497,6 +1570,7 @@ class AssetRegistry:
         return execution
 
     def approve_asset(self, asset_id: str, *, actor: str = "reviewer", comment: str | None = None) -> ConfigAsset:
+        self.validate_asset_draft(self.get_asset(asset_id))
         return self._transition_asset(
             asset_id,
             expected={"draft"},

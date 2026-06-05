@@ -258,6 +258,91 @@ def test_delete_controls_remove_only_safe_objects(client: TestClient) -> None:
     assert allowed_delete_response.status_code == 204
 
 
+def test_asset_draft_editor_updates_and_validates_hard_rule(client: TestClient) -> None:
+    draft_response = client.post(
+        "/api/rule-drafts/generate",
+        json={
+            "source_text": "采购合同预付款原则上不得超过合同总价 25%。",
+            "profile_hint": {"contract_type": "procurement_contract"},
+            "draft_types": ["hard_rule"],
+        },
+    )
+    draft = draft_response.json()["drafts"][0]
+    original_hash = draft["content_hash"]
+    updated_content = {
+        **draft["content"],
+        "title": "采购合同预付款比例超过 28%",
+        "conditions": [{"fact_key": "payment.prepay_ratio", "operator": ">", "value": 28}],
+        "value": 28,
+    }
+
+    update_response = client.patch(
+        f"/api/assets/{draft['id']}",
+        json={
+            "name": "采购合同预付款 28% 草稿",
+            "description": "审核员修订后的草稿。",
+            "applicability": {"contract_type": "procurement_contract"},
+            "content": updated_content,
+            "schema_version": "hard-rule-v2",
+        },
+    )
+
+    assert update_response.status_code == 200
+    updated = update_response.json()["asset"]
+    assert updated["name"] == "采购合同预付款 28% 草稿"
+    assert updated["content"]["conditions"][0]["value"] == 28
+    assert updated["content_hash"] != original_hash
+
+    approve_response = client.post(f"/api/assets/{draft['id']}/approve", json={"comment": "checked"})
+    assert approve_response.status_code == 200
+    assert approve_response.json()["asset"]["status"] == "approved"
+
+
+def test_invalid_asset_draft_cannot_be_approved(client: TestClient) -> None:
+    create_response = client.post(
+        "/api/assets",
+        json={
+            "asset_type": "hard_rule",
+            "name": "非法硬规则草稿",
+            "applicability": {"contract_type": "procurement_contract"},
+            "content": {"rule_id": "BROKEN", "title": "缺少核心字段"},
+        },
+    )
+    draft = create_response.json()["asset"]
+
+    approve_response = client.post(f"/api/assets/{draft['id']}/approve", json={"comment": "checked"})
+
+    assert approve_response.status_code == 400
+    assert "hard_rule 草稿缺少字段" in approve_response.json()["detail"]
+
+
+def test_rule_drafts_editor_reports_invalid_json(client: TestClient) -> None:
+    draft_response = client.post(
+        "/api/rule-drafts/generate",
+        json={
+            "source_text": "采购合同预付款原则上不得超过合同总价 25%。",
+            "profile_hint": {"contract_type": "procurement_contract"},
+            "draft_types": ["hard_rule"],
+        },
+    )
+    draft = draft_response.json()["drafts"][0]
+
+    response = client.post(
+        f"/assets/{draft['id']}/update-draft",
+        data={
+            "name": draft["name"],
+            "schema_version": draft["schema_version"],
+            "description": draft["description"] or "",
+            "applicability_json": '{"contract_type": "procurement_contract"}',
+            "content_json": "{bad-json",
+        },
+        follow_redirects=True,
+    )
+
+    assert response.status_code == 200
+    assert "JSON 格式错误" in response.text
+
+
 def test_llm_rule_draft_generation_rejects_invalid_structured_output(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

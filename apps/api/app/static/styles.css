@@ -509,9 +509,47 @@ a {
     background: rgba(184, 55, 47, 0.08);
 }
 
+.notice-ok {
+    border-color: rgba(36, 118, 93, 0.28);
+    color: var(--ok);
+    background: rgba(36, 118, 93, 0.08);
+}
+
+.compact-notice {
+    margin: 12px 0;
+    padding: 10px 12px;
+    border-radius: var(--radius-sm);
+}
+
 .textarea {
     min-height: 96px;
     resize: vertical;
+}
+
+.code-textarea {
+    font-family: "IBM Plex Mono", "Consolas", monospace;
+    font-size: 13px;
+    line-height: 1.55;
+}
+
+.draft-editor {
+    margin-top: 14px;
+    padding: 12px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    background: rgba(255, 255, 255, 0.66);
+}
+
+.draft-editor summary {
+    cursor: pointer;
+    color: var(--text);
+    font-weight: 700;
+}
+
+.draft-editor-form {
+    display: grid;
+    gap: 12px;
+    margin-top: 12px;
 }
 
 .form-grid-3 {

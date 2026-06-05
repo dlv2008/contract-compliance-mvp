@@ -230,8 +230,41 @@
                 <p>{{ asset.description }}</p>
                 <dl class="compact-dl">
                     <div><dt>适用性</dt><dd>{{ asset.applicability }}</dd></div>
-                    <div><dt>内容</dt><dd>{{ asset.content }}</dd></div>
+                    <div><dt>Schema</dt><dd>{{ asset.schema_version }}</dd></div>
+                    <div><dt>来源文档</dt><dd>{% if asset.source_document_id %}<a href="/rule-drafts?source_document_id={{ asset.source_document_id }}">{{ asset.source_document_id }}</a>{% else %}无{% endif %}</dd></div>
+                    <div><dt>来源 Chunks</dt><dd>{{ asset.source_chunk_ids }}</dd></div>
                 </dl>
+                {% if asset.validation_error %}
+                <div class="notice notice-danger compact-notice">校验失败：{{ asset.validation_error }}</div>
+                {% else %}
+                <div class="notice notice-ok compact-notice">结构化校验通过，可以提交审核。</div>
+                {% endif %}
+                <details class="draft-editor">
+                    <summary>编辑草稿内容</summary>
+                    <form class="draft-editor-form" action="/assets/{{ asset.id }}/update-draft" method="post">
+                        <label class="form-row">
+                            <span>名称</span>
+                            <input class="input" name="name" value="{{ asset.name }}" required />
+                        </label>
+                        <label class="form-row">
+                            <span>Schema Version</span>
+                            <input class="input" name="schema_version" value="{{ asset.schema_version }}" required />
+                        </label>
+                        <label class="form-row">
+                            <span>说明</span>
+                            <textarea class="input textarea" name="description" rows="2">{{ asset.description or "" }}</textarea>
+                        </label>
+                        <label class="form-row">
+                            <span>适用性 JSON</span>
+                            <textarea class="input textarea code-textarea" name="applicability_json" rows="4" required>{{ asset.applicability_json }}</textarea>
+                        </label>
+                        <label class="form-row">
+                            <span>内容 JSON</span>
+                            <textarea class="input textarea code-textarea" name="content_json" rows="12" required>{{ asset.content_json }}</textarea>
+                        </label>
+                        <button class="button-secondary" type="submit">保存并校验</button>
+                    </form>
+                </details>
             </div>
             <div class="asset-actions">
                 <form action="/assets/{{ asset.id }}/approve" method="post">

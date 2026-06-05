@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
@@ -88,6 +89,22 @@ def _profile_detail_data(profile_id: str, *, error: str | None = None) -> dict:
         "execution_audit": registry.profile_execution_audit(profile),
         "active_assets": [asset.model_dump() for asset in registry.list_assets(status="active")],
         "error": error,
+    }
+
+
+def _draft_asset_view(asset, registry: AssetRegistry) -> dict:  # noqa: ANN001
+    validation_error = None
+    try:
+        registry.validate_asset_draft(asset)
+    except AssetStateError as exc:
+        validation_error = str(exc)
+    return {
+        **asset.model_dump(),
+        "applicability_json": json.dumps(asset.applicability, ensure_ascii=False, indent=2),
+        "content_json": json.dumps(asset.content, ensure_ascii=False, indent=2),
+        "validation_error": validation_error,
+        "source_document_id": asset.content.get("source_document_id"),
+        "source_chunk_ids": asset.content.get("source_chunk_ids") or [],
     }
 
 
@@ -225,7 +242,7 @@ def rule_drafts(
     latest_execution_id: str | None = None,
 ) -> HTMLResponse:
     registry = AssetRegistry()
-    drafts = [asset.model_dump() for asset in registry.list_assets(status="draft")]
+    drafts = [_draft_asset_view(asset, registry) for asset in registry.list_assets(status="draft")]
     approved = [asset.model_dump() for asset in registry.list_assets(status="approved")]
     source_documents = registry.list_source_documents()
     selected_source_document = None
@@ -329,6 +346,38 @@ def delete_asset_form(asset_id: str) -> RedirectResponse:
     except (AssetNotFoundError, AssetStateError) as exc:
         return _redirect_with_asset_error("/rule-drafts", exc)
     return RedirectResponse(url="/rule-drafts", status_code=303)
+
+
+@router.post("/assets/{asset_id}/update-draft")
+def update_asset_draft_form(
+    asset_id: str,
+    name: str = Form(...),
+    schema_version: str = Form(...),
+    description: str | None = Form(default=None),
+    applicability_json: str = Form(...),
+    content_json: str = Form(...),
+) -> RedirectResponse:
+    try:
+        applicability = json.loads(applicability_json)
+        content = json.loads(content_json)
+    except json.JSONDecodeError as exc:
+        return _redirect_with_asset_error("/rule-drafts", AssetStateError(f"JSON 格式错误：{exc.msg}"))
+    if not isinstance(applicability, dict):
+        return _redirect_with_asset_error("/rule-drafts", AssetStateError("适用性必须是 JSON 对象。"))
+    if not isinstance(content, dict):
+        return _redirect_with_asset_error("/rule-drafts", AssetStateError("内容必须是 JSON 对象。"))
+    try:
+        AssetRegistry().update_asset_draft(
+            asset_id,
+            name=name,
+            description=description,
+            applicability=applicability,
+            content=content,
+            schema_version=schema_version,
+        )
+    except (AssetNotFoundError, AssetStateError) as exc:
+        return _redirect_with_asset_error("/rule-drafts", exc)
+    return RedirectResponse(url=f"/rule-drafts?latest_execution_id={content.get('llm_execution_id', '')}", status_code=303)
 
 
 @router.get("/review-profiles/{profile_id}", response_class=HTMLResponse)
