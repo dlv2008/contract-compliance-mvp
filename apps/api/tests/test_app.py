@@ -619,6 +619,114 @@ def test_llm_field_extraction_fallback_marks_candidate_field(client: TestClient)
     assert fact_event["payload"]["llm_candidate_fields"] == ["approval.record_no"]
 
 
+def test_hard_rule_condition_tree_supports_all_any_not() -> None:
+    from app.services.review_engine import evaluate_hard_rule, set_fact
+
+    facts = {}
+    set_fact(facts, "payment.prepay_ratio", "45%", ["C002"])
+    set_fact(facts, "invoice.tax_rate", "13%", ["C003"])
+    set_fact(facts, "approval.record_no", None, [])
+    rule = {
+        "rule_id": "DSL-PUR-001",
+        "title": "DSL condition tree rule",
+        "level": "high",
+        "applicability": {"contract_type": "procurement_contract"},
+        "condition_tree": {
+            "all": [
+                {
+                    "any": [
+                        {"fact_key": "payment.prepay_ratio", "operator": ">", "value": 40},
+                        {"fact_key": "invoice.tax_rate", "operator": "missing"},
+                    ]
+                },
+                {"not": {"fact_key": "approval.record_no", "operator": "present"}},
+            ]
+        },
+        "policy_reference_ids": ["POLICY-DSL-001"],
+        "reason_template": "prepay {payment.prepay_ratio}",
+        "action_template": "manual review",
+    }
+
+    risk = evaluate_hard_rule(rule, "procurement_contract", facts)
+
+    assert risk is not None
+    assert risk.rule_id == "DSL-PUR-001"
+    assert risk.evidence_clause_ids == ["C002", "C003"]
+
+
+def test_hard_rule_condition_tree_asset_affects_review(client: TestClient) -> None:
+    create_rule_response = client.post(
+        "/api/assets",
+        json={
+            "asset_type": "hard_rule",
+            "name": "DSL prepay or missing tax rule",
+            "applicability": {"contract_type": "procurement_contract"},
+            "content": {
+                "rule_id": "DSL-PUR-001",
+                "title": "DSL 高预付或缺税率且无审批",
+                "level": "high",
+                "condition_tree": {
+                    "all": [
+                        {
+                            "any": [
+                                {"fact_key": "payment.prepay_ratio", "operator": ">", "value": 40},
+                                {"fact_key": "invoice.tax_rate", "operator": "missing"},
+                            ]
+                        },
+                        {"not": {"fact_key": "approval.record_no", "operator": "present"}},
+                    ]
+                },
+                "evidence_fact_keys": [],
+                "policy_reference_ids": ["POLICY-DSL-001"],
+                "reason_template": "合同存在高预付或缺税率，且未看到例外审批编号。",
+                "action_template": "请补充审批依据或调整付款/发票条款。",
+            },
+            "schema_version": "hard-rule-v3",
+        },
+    )
+    assert create_rule_response.status_code == 201
+    draft_rule = create_rule_response.json()["asset"]
+    assert client.post(f"/api/assets/{draft_rule['id']}/approve", json={"comment": "dsl checked"}).status_code == 200
+    active_rule = client.post(f"/api/assets/{draft_rule['id']}/publish", json={}).json()["asset"]
+
+    clone_response = client.post(
+        "/api/review-profiles/profile-procurement-basic-v1/versions",
+        json={"name": "DSL hard rule profile"},
+    )
+    draft_profile = clone_response.json()["profile"]
+    bind_response = client.post(
+        f"/api/review-profiles/{draft_profile['id']}/assets",
+        json={"asset_id": active_rule["id"], "binding_reason": "dsl hard rule test"},
+    )
+    assert bind_response.status_code == 200
+    active_profile = client.post(f"/api/review-profiles/{draft_profile['id']}/publish", json={}).json()["profile"]
+
+    contract_text = """
+# 办公电脑采购合同
+
+【A001】合同双方
+甲方：星河科技有限公司
+乙方：上海云桥科技有限公司
+
+【A002】付款方式
+甲方支付合同总价 45% 作为预付款，剩余 55% 在到货验收后支付。
+
+【A003】发票
+乙方应开具增值税专用发票，税率 13%。
+""".strip()
+    create_task_response = client.post(
+        "/api/tasks",
+        data={"contract_name": "dsl hard rule task", "selected_profile_id": active_profile["id"]},
+        files={"file": ("contract.md", contract_text.encode("utf-8"), "text/markdown")},
+    )
+    assert create_task_response.status_code == 201
+    task_id = create_task_response.json()["task"]["id"]
+    detail = client.get(f"/api/tasks/{task_id}").json()["task"]
+    rule_ids = {item["rule"] for item in detail["risks"]}
+
+    assert "DSL-PUR-001" in rule_ids
+
+
 def test_rule_drafts_editor_reports_invalid_json(client: TestClient) -> None:
     draft_response = client.post(
         "/api/rule-drafts/generate",

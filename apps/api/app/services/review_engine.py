@@ -1012,12 +1012,13 @@ def evaluate_hard_rule(
     if not hard_rule_matches_contract_type(rule, contract_type):
         return None
 
-    conditions = hard_rule_conditions(rule)
-    if not conditions or not all(condition_matches(condition, facts) for condition in conditions):
+    condition_tree = hard_rule_condition_tree(rule)
+    if not condition_tree or not condition_tree_matches(condition_tree, facts):
         return None
 
     evidence_ids: list[str] = []
-    for fact_key in rule.get("evidence_fact_keys", []):
+    evidence_fact_keys = rule.get("evidence_fact_keys") or condition_tree_fact_keys(condition_tree)
+    for fact_key in evidence_fact_keys:
         evidence_ids = merge_ids(evidence_ids, fact_evidence_ids(facts, str(fact_key)))
 
     rule_id = str(rule.get("rule_id") or rule.get("asset_id") or "RULE-UNKNOWN")
@@ -1066,10 +1067,64 @@ def hard_rule_conditions(rule: dict[str, Any]) -> list[dict[str, Any]]:
     return []
 
 
+def hard_rule_condition_tree(rule: dict[str, Any]) -> dict[str, Any] | None:
+    for key in ["condition_tree", "condition", "where"]:
+        value = rule.get(key)
+        if isinstance(value, dict) and value:
+            return value
+    conditions = hard_rule_conditions(rule)
+    if conditions:
+        return {"all": conditions}
+    return None
+
+
+def condition_tree_matches(node: Any, facts: dict[str, dict[str, Any]]) -> bool:
+    if isinstance(node, list):
+        return all(condition_tree_matches(item, facts) for item in node)
+    if not isinstance(node, dict) or not node:
+        return False
+    if "all" in node:
+        children = node.get("all")
+        return isinstance(children, list) and bool(children) and all(
+            condition_tree_matches(child, facts) for child in children
+        )
+    if "any" in node:
+        children = node.get("any")
+        return isinstance(children, list) and bool(children) and any(
+            condition_tree_matches(child, facts) for child in children
+        )
+    if "not" in node:
+        return not condition_tree_matches(node.get("not"), facts)
+    return condition_matches(node, facts)
+
+
+def condition_tree_fact_keys(node: Any) -> list[str]:
+    if isinstance(node, list):
+        keys: list[str] = []
+        for item in node:
+            keys = merge_ids(keys, condition_tree_fact_keys(item))
+        return keys
+    if not isinstance(node, dict):
+        return []
+    keys: list[str] = []
+    for branch_key in ["all", "any"]:
+        if branch_key in node:
+            return condition_tree_fact_keys(node.get(branch_key))
+    if "not" in node:
+        return condition_tree_fact_keys(node.get("not"))
+    fact_key = node.get("fact_key")
+    if fact_key:
+        keys.append(str(fact_key))
+    expected_fact_key = node.get("expected_fact_key")
+    if expected_fact_key:
+        keys.append(str(expected_fact_key))
+    return keys
+
+
 def condition_matches(condition: dict[str, Any], facts: dict[str, dict[str, Any]]) -> bool:
     fact_key = str(condition.get("fact_key") or "")
-    operator = str(condition.get("operator") or "is").lower()
-    expected = condition.get("value")
+    operator = normalize_operator(condition.get("operator") or "is")
+    expected = condition_expected_value(condition, facts)
     actual = fact_value(facts, fact_key)
     status = fact_status(facts, fact_key)
 
@@ -1077,10 +1132,21 @@ def condition_matches(condition: dict[str, Any], facts: dict[str, dict[str, Any]
         return status == "missing" or actual is None or actual == ""
     if operator == "present":
         return status != "missing" and actual is not None and actual != ""
-    if operator in {">", ">=", "<", "<=", "==", "!="}:
+    if operator in {">", ">=", "<", "<=", "==", "!=", "between"}:
         actual_number = coerce_number(actual)
+        if actual_number is None:
+            return False
+        if operator == "between":
+            bounds = expected if isinstance(expected, list) else condition.get("range")
+            if not isinstance(bounds, list) or len(bounds) != 2:
+                return False
+            lower = coerce_number(bounds[0])
+            upper = coerce_number(bounds[1])
+            if lower is None or upper is None:
+                return False
+            return lower <= actual_number <= upper
         expected_number = coerce_number(expected)
-        if actual_number is None or expected_number is None:
+        if expected_number is None:
             return False
         return compare_number(actual_number, expected_number, operator)
     if operator == "is":
@@ -1091,7 +1157,41 @@ def condition_matches(condition: dict[str, Any], facts: dict[str, dict[str, Any]
         return expected is not None and str(expected) in str(actual or "")
     if operator == "not_contains":
         return expected is not None and str(expected) not in str(actual or "")
+    if operator == "contains_any":
+        return any(str(item) in str(actual or "") for item in list_strings(expected))
+    if operator == "contains_all":
+        expected_items = list_strings(expected)
+        return bool(expected_items) and all(str(item) in str(actual or "") for item in expected_items)
+    if operator == "in":
+        expected_items = [normalize_rule_value(item) for item in list_strings(expected)]
+        return normalize_rule_value(actual) in expected_items
+    if operator == "not_in":
+        expected_items = [normalize_rule_value(item) for item in list_strings(expected)]
+        return normalize_rule_value(actual) not in expected_items
+    if operator == "matches_regex":
+        return isinstance(expected, str) and re.search(expected, str(actual or "")) is not None
     return False
+
+
+def normalize_operator(value: Any) -> str:
+    operator = str(value or "is").strip().lower()
+    aliases = {
+        "=": "==",
+        "equals": "is",
+        "eq": "is",
+        "not_equals": "is_not",
+        "neq": "is_not",
+        "not in": "not_in",
+        "regex": "matches_regex",
+    }
+    return aliases.get(operator, operator)
+
+
+def condition_expected_value(condition: dict[str, Any], facts: dict[str, dict[str, Any]]) -> Any:
+    expected_fact_key = condition.get("expected_fact_key")
+    if expected_fact_key:
+        return fact_value(facts, str(expected_fact_key))
+    return condition.get("value")
 
 
 def coerce_number(value: Any) -> float | None:
@@ -1152,12 +1252,38 @@ def render_rule_template(template: str, rule: dict[str, Any], facts: dict[str, d
 
 
 def rule_threshold_text(rule: dict[str, Any]) -> str:
-    for condition in hard_rule_conditions(rule):
+    for condition in hard_rule_leaf_conditions(rule):
         if condition.get("fact_key") == "payment.prepay_ratio" and condition.get("value") is not None:
             number = coerce_number(condition.get("value"))
             return trim_number(str(number)) if number is not None else str(condition.get("value"))
     number = coerce_number(rule.get("value"))
     return trim_number(str(number)) if number is not None else ""
+
+
+def hard_rule_leaf_conditions(rule: dict[str, Any]) -> list[dict[str, Any]]:
+    condition_tree = hard_rule_condition_tree(rule)
+    if condition_tree:
+        return condition_tree_leaf_conditions(condition_tree)
+    return hard_rule_conditions(rule)
+
+
+def condition_tree_leaf_conditions(node: Any) -> list[dict[str, Any]]:
+    if isinstance(node, list):
+        items: list[dict[str, Any]] = []
+        for child in node:
+            items.extend(condition_tree_leaf_conditions(child))
+        return items
+    if not isinstance(node, dict):
+        return []
+    items: list[dict[str, Any]] = []
+    for branch_key in ["all", "any"]:
+        if branch_key in node:
+            return condition_tree_leaf_conditions(node.get(branch_key))
+    if "not" in node:
+        return condition_tree_leaf_conditions(node.get("not"))
+    if node.get("fact_key"):
+        items.append(node)
+    return items
 
 
 def normalize_policy_ids(value: Any) -> list[str]:

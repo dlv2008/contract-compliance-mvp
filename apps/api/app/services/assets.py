@@ -1437,8 +1437,16 @@ class AssetRegistry:
         if level in {"mandatory", "required", "critical", "严重", "强制"}:
             normalized["level"] = "high"
 
+        raw_condition_tree = normalized.get("condition_tree") or normalized.get("condition") or normalized.get("where")
+        if isinstance(raw_condition_tree, dict) and raw_condition_tree:
+            normalized["condition_tree"] = self._normalize_condition_tree(raw_condition_tree)
+
         raw_conditions = normalized.get("conditions")
         if isinstance(raw_conditions, dict):
+            if any(key in raw_conditions for key in ["all", "any", "not"]):
+                normalized["condition_tree"] = self._normalize_condition_tree(raw_conditions)
+                normalized["conditions"] = []
+                raw_conditions = {}
             threshold_items = raw_conditions.get("threshold")
             if isinstance(threshold_items, list):
                 normalized["conditions"] = [
@@ -1462,29 +1470,72 @@ class AssetRegistry:
             ]
 
         if not normalized.get("evidence_fact_keys"):
-            fact_keys = [
-                str(condition.get("fact_key"))
-                for condition in normalized.get("conditions", [])
-                if isinstance(condition, dict) and condition.get("fact_key")
-            ]
+            fact_keys = self._condition_tree_fact_keys(normalized.get("condition_tree"))
+            if not fact_keys:
+                fact_keys = [
+                    str(condition.get("fact_key"))
+                    for condition in normalized.get("conditions", [])
+                    if isinstance(condition, dict) and condition.get("fact_key")
+                ]
             normalized["evidence_fact_keys"] = fact_keys
 
         return normalized
 
+    def _normalize_condition_tree(self, node: dict) -> dict:
+        normalized = dict(node)
+        for branch_key in ["all", "any"]:
+            children = normalized.get(branch_key)
+            if isinstance(children, list):
+                normalized[branch_key] = [
+                    self._normalize_condition_tree(child)
+                    for child in children
+                    if isinstance(child, dict)
+                ]
+        not_child = normalized.get("not")
+        if isinstance(not_child, dict):
+            normalized["not"] = self._normalize_condition_tree(not_child)
+        if not any(key in normalized for key in ["all", "any", "not"]) and normalized.get("fact_key"):
+            normalized = self._normalize_condition_item(normalized)
+        return normalized
+
     def _normalize_condition_item(self, item: dict) -> dict:
         fact_key = item.get("fact_key") or item.get("target_field") or item.get("field") or "payment.amount"
-        return {
+        normalized = {
             "fact_key": str(fact_key),
             "operator": item.get("operator") or ">",
             "value": item.get("value"),
         }
+        if item.get("expected_fact_key"):
+            normalized["expected_fact_key"] = str(item["expected_fact_key"])
+        if item.get("range") is not None:
+            normalized["range"] = item["range"]
+        return normalized
+
+    def _condition_tree_fact_keys(self, node: object) -> list[str]:
+        if isinstance(node, list):
+            keys: list[str] = []
+            for child in node:
+                keys.extend(self._condition_tree_fact_keys(child))
+            return list(dict.fromkeys(keys))
+        if not isinstance(node, dict):
+            return []
+        for branch_key in ["all", "any"]:
+            if branch_key in node:
+                return self._condition_tree_fact_keys(node.get(branch_key))
+        if "not" in node:
+            return self._condition_tree_fact_keys(node.get("not"))
+        keys = []
+        if node.get("fact_key"):
+            keys.append(str(node["fact_key"]))
+        if node.get("expected_fact_key"):
+            keys.append(str(node["expected_fact_key"]))
+        return keys
 
     def _validate_hard_rule_draft_content(self, content: dict) -> None:
         required_keys = {
             "rule_id",
             "title",
             "level",
-            "conditions",
             "evidence_fact_keys",
             "policy_reference_ids",
             "reason_template",
@@ -1493,14 +1544,43 @@ class AssetRegistry:
         missing = sorted(key for key in required_keys if key not in content)
         if missing:
             raise AssetStateError(f"hard_rule 草稿缺少字段：{', '.join(missing)}。")
-        if not isinstance(content["conditions"], list) or not content["conditions"]:
-            raise AssetStateError("hard_rule.conditions 必须是非空数组。")
-        for condition in content["conditions"]:
-            if not isinstance(condition, dict):
-                raise AssetStateError("hard_rule.conditions 中存在非对象条件。")
-            for key in ["fact_key", "operator", "value"]:
-                if key not in condition:
-                    raise AssetStateError(f"hard_rule 条件缺少 {key}。")
+        has_conditions = isinstance(content.get("conditions"), list) and bool(content.get("conditions"))
+        has_tree = isinstance(content.get("condition_tree"), dict) and bool(content.get("condition_tree"))
+        has_legacy_condition = bool(content.get("fact_key"))
+        if not any([has_conditions, has_tree, has_legacy_condition]):
+            raise AssetStateError("hard_rule requires conditions, condition_tree, or fact_key.")
+        if has_conditions:
+            for condition in content["conditions"]:
+                self._validate_hard_rule_condition(condition)
+        if has_tree:
+            self._validate_hard_rule_condition_tree(content["condition_tree"])
+        return
+
+    def _validate_hard_rule_condition_tree(self, node: object) -> None:
+        if not isinstance(node, dict) or not node:
+            raise AssetStateError("hard_rule.condition_tree must be a non-empty object.")
+        for branch_key in ["all", "any"]:
+            if branch_key in node:
+                children = node.get(branch_key)
+                if not isinstance(children, list) or not children:
+                    raise AssetStateError(f"hard_rule.condition_tree.{branch_key} must be a non-empty array.")
+                for child in children:
+                    self._validate_hard_rule_condition_tree(child)
+                return
+        if "not" in node:
+            self._validate_hard_rule_condition_tree(node["not"])
+            return
+        self._validate_hard_rule_condition(node)
+
+    def _validate_hard_rule_condition(self, condition: object) -> None:
+        if not isinstance(condition, dict):
+            raise AssetStateError("hard_rule condition must be an object.")
+        for key in ["fact_key", "operator"]:
+            if key not in condition:
+                raise AssetStateError(f"hard_rule condition missing {key}.")
+        operator = str(condition.get("operator") or "").lower()
+        if "value" not in condition and "expected_fact_key" not in condition and operator not in {"missing", "present"}:
+            raise AssetStateError("hard_rule condition requires value or expected_fact_key.")
 
     def _validate_semantic_rule_content(self, content: dict) -> None:
         if not any(content.get(key) for key in ["question", "semantic_definitions", "validation_rules"]):
