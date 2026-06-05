@@ -11,7 +11,7 @@ from typing import Any, Protocol
 from pydantic import ValidationError
 
 from app.config import Settings, get_settings
-from app.models import ConfigAsset, ReviewProfile, ReviewProfileAssetRef
+from app.models import AssetSourceChunk, AssetSourceDocument, ConfigAsset, ReviewProfile, ReviewProfileAssetRef
 
 
 BASIC_PROFILE_ID = "profile-basic-contract-review-v1"
@@ -145,6 +145,35 @@ class JsonAssetStore:
         temp_path.replace(self.state_path)
 
 
+class AssetSourceDocumentStore(Protocol):
+    def load_documents(self) -> list[AssetSourceDocument]:
+        pass
+
+    def save_documents(self, documents: list[AssetSourceDocument]) -> None:
+        pass
+
+
+class JsonAssetSourceDocumentStore:
+    def __init__(self, state_path: Path) -> None:
+        self.state_path = state_path
+
+    def load_documents(self) -> list[AssetSourceDocument]:
+        if not self.state_path.exists():
+            self.save_documents([])
+        try:
+            payload = json.loads(self.state_path.read_text(encoding="utf-8"))
+            return [AssetSourceDocument.model_validate(item) for item in payload.get("documents", [])]
+        except (OSError, json.JSONDecodeError, ValidationError) as exc:
+            raise AssetStateError("制度来源文档仓库无法读取。") from exc
+
+    def save_documents(self, documents: list[AssetSourceDocument]) -> None:
+        self.state_path.parent.mkdir(parents=True, exist_ok=True)
+        temp_path = self.state_path.with_suffix(".tmp")
+        payload = {"documents": [document.model_dump() for document in documents]}
+        temp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        temp_path.replace(self.state_path)
+
+
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
@@ -164,6 +193,11 @@ def compute_asset_content_hash(
     }
     raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def compute_source_text_hash(source_text: str) -> str:
+    normalized = "\n".join(line.rstrip() for line in source_text.strip().splitlines())
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 
 def _asset(
@@ -711,9 +745,71 @@ SEED_PROFILES: list[ReviewProfile] = [
 
 
 class AssetRegistry:
-    def __init__(self, settings: Settings | None = None, store: AssetStore | None = None) -> None:
+    def __init__(
+        self,
+        settings: Settings | None = None,
+        store: AssetStore | None = None,
+        source_store: AssetSourceDocumentStore | None = None,
+    ) -> None:
         self.settings = settings or get_settings()
         self.store = store or JsonAssetStore(self.settings.data_dir / "assets.json")
+        self.source_store = source_store or JsonAssetSourceDocumentStore(
+            self.settings.data_dir / "asset_source_documents.json"
+        )
+
+    def list_source_documents(self, *, q: str | None = None) -> list[AssetSourceDocument]:
+        documents = self.source_store.load_documents()
+        if q:
+            needle = q.strip().lower()
+            documents = [
+                item
+                for item in documents
+                if needle in item.name.lower() or needle in item.id.lower() or needle in item.content_hash.lower()
+            ]
+        return sorted(documents, key=lambda item: item.created_at or "", reverse=True)
+
+    def get_source_document(self, document_id: str) -> AssetSourceDocument:
+        document = next((item for item in self.source_store.load_documents() if item.id == document_id), None)
+        if document is None:
+            raise AssetNotFoundError("制度来源文档不存在。")
+        return document
+
+    def create_source_document(
+        self,
+        *,
+        name: str,
+        source_text: str,
+        source_type: str = "policy_document",
+        metadata: dict | None = None,
+        actor: str = "reviewer",
+    ) -> AssetSourceDocument:
+        resolved_text = source_text.strip()
+        if not resolved_text:
+            raise AssetStateError("制度来源文档内容不能为空。")
+        now = utc_now()
+        document_id = f"source-doc-{uuid.uuid4().hex[:10]}"
+        chunks = self._split_source_document(document_id, resolved_text)
+        document = AssetSourceDocument(
+            id=document_id,
+            source_type=source_type or "policy_document",
+            name=name.strip() or "未命名制度文档",
+            content_text=resolved_text,
+            content_hash=compute_source_text_hash(resolved_text),
+            chunks=chunks,
+            metadata={
+                **(metadata or {}),
+                "chunk_count": len(chunks),
+                "char_count": len(resolved_text),
+                "splitter": "static-policy-splitter-v1",
+            },
+            created_by=actor or "reviewer",
+            created_at=now,
+            updated_at=now,
+        )
+        documents = self.source_store.load_documents()
+        documents.append(document)
+        self.source_store.save_documents(documents)
+        return document
 
     def list_assets(
         self,
@@ -1238,6 +1334,61 @@ class AssetRegistry:
             "prompt_template",
             "seed_profile",
         ]
+
+    def _split_source_document(self, document_id: str, source_text: str) -> list[AssetSourceChunk]:
+        heading_pattern = re.compile(
+            r"^(第[一二三四五六七八九十百千万0-9]+[章节条款]|[一二三四五六七八九十]+、|\d+(?:\.\d+)*[、.\s]|【.+?】)"
+        )
+        sections: list[tuple[str, int, int]] = []
+        current_title = "全文"
+        current_start = 0
+        cursor = 0
+        has_heading = False
+
+        for raw_line in source_text.splitlines(keepends=True):
+            stripped = raw_line.strip()
+            if stripped and heading_pattern.match(stripped):
+                if has_heading and cursor > current_start:
+                    sections.append((current_title, current_start, cursor))
+                current_title = stripped[:80]
+                current_start = cursor
+                has_heading = True
+            cursor += len(raw_line)
+        if has_heading:
+            sections.append((current_title, current_start, len(source_text)))
+        else:
+            paragraph_start = 0
+            for match in re.finditer(r"\n\s*\n", source_text):
+                end = match.start()
+                paragraph = source_text[paragraph_start:end].strip()
+                if paragraph:
+                    title = paragraph.splitlines()[0][:80]
+                    sections.append((title, paragraph_start, end))
+                paragraph_start = match.end()
+            tail = source_text[paragraph_start:].strip()
+            if tail:
+                sections.append((tail.splitlines()[0][:80], paragraph_start, len(source_text)))
+
+        if not sections:
+            sections = [("全文", 0, len(source_text))]
+
+        chunks: list[AssetSourceChunk] = []
+        for index, (title, start, end) in enumerate(sections, start=1):
+            text = source_text[start:end].strip()
+            if not text:
+                continue
+            chunks.append(
+                AssetSourceChunk(
+                    id=f"{document_id}-chunk-{index:03d}",
+                    document_id=document_id,
+                    sequence_no=index,
+                    title=title,
+                    text=text,
+                    char_start=start,
+                    char_end=end,
+                )
+            )
+        return chunks
 
     def _transition_asset(
         self,

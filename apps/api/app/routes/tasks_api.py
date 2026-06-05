@@ -57,6 +57,14 @@ class CloneAssetRequest(BaseModel):
     actor: str = "reviewer"
 
 
+class CreateSourceDocumentRequest(BaseModel):
+    name: str
+    source_text: str
+    source_type: str = "policy_document"
+    metadata: dict = Field(default_factory=dict)
+    actor: str = "reviewer"
+
+
 class RuleDraftGenerateRequest(BaseModel):
     source_type: str = "policy_document"
     source_text: str
@@ -125,6 +133,45 @@ def list_assets(asset_type: str | None = None, status: str | None = None, q: str
 @router.get("/assets/execution-audit")
 def asset_execution_audit() -> dict:
     return AssetRegistry().asset_execution_audit()
+
+
+@router.get("/asset-source-documents")
+def list_asset_source_documents(q: str | None = None) -> dict:
+    documents = AssetRegistry().list_source_documents(q=q)
+    return {
+        "items": [
+            {
+                **document.model_dump(exclude={"content_text"}),
+                "content_preview": document.content_text[:240],
+            }
+            for document in documents
+        ],
+        "total": len(documents),
+    }
+
+
+@router.post("/asset-source-documents", status_code=201)
+def create_asset_source_document(payload: CreateSourceDocumentRequest) -> JSONResponse:
+    try:
+        document = AssetRegistry().create_source_document(
+            name=payload.name,
+            source_text=payload.source_text,
+            source_type=payload.source_type,
+            metadata=payload.metadata,
+            actor=payload.actor,
+        )
+    except AssetStateError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return JSONResponse(status_code=201, content={"document": document.model_dump()})
+
+
+@router.get("/asset-source-documents/{document_id}")
+def get_asset_source_document(document_id: str) -> dict:
+    try:
+        document = AssetRegistry().get_source_document(document_id)
+    except AssetNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {"document": document.model_dump()}
 
 
 @router.get("/assets/{asset_id}")

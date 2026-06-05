@@ -218,10 +218,21 @@ def publish_asset_form(asset_id: str) -> RedirectResponse:
 
 
 @router.get("/rule-drafts", response_class=HTMLResponse)
-def rule_drafts(request: Request, error: str | None = None) -> HTMLResponse:
+def rule_drafts(
+    request: Request,
+    error: str | None = None,
+    source_document_id: str | None = None,
+) -> HTMLResponse:
     registry = AssetRegistry()
     drafts = [asset.model_dump() for asset in registry.list_assets(status="draft")]
     approved = [asset.model_dump() for asset in registry.list_assets(status="approved")]
+    source_documents = registry.list_source_documents()
+    selected_source_document = None
+    if source_document_id:
+        try:
+            selected_source_document = registry.get_source_document(source_document_id).model_dump()
+        except AssetNotFoundError as exc:
+            error = str(exc)
     return templates.TemplateResponse(
         request,
         "rule_drafts.html",
@@ -230,11 +241,39 @@ def rule_drafts(request: Request, error: str | None = None) -> HTMLResponse:
             "data": {
                 "drafts": drafts,
                 "approved": approved,
+                "source_documents": [document.model_dump(exclude={"content_text"}) for document in source_documents],
+                "selected_source_document": selected_source_document,
                 "profiles": [profile.model_dump() for profile in registry.list_profiles(status=None)],
                 "error": error,
             },
         },
     )
+
+
+@router.post("/asset-source-documents/create")
+async def create_asset_source_document_form(
+    name: str = Form(...),
+    source_type: str = Form(default="policy_document"),
+    source_text: str | None = Form(default=None),
+    file: UploadFile | None = File(default=None),
+) -> RedirectResponse:
+    uploaded_text = ""
+    filename = None
+    if file and file.filename:
+        filename = file.filename
+        uploaded_text = (await file.read()).decode("utf-8", errors="ignore")
+    resolved_text = (uploaded_text or source_text or "").strip()
+    resolved_name = name.strip() or filename or "未命名制度文档"
+    try:
+        document = AssetRegistry().create_source_document(
+            name=resolved_name,
+            source_text=resolved_text,
+            source_type=source_type,
+            metadata={"filename": filename} if filename else {},
+        )
+    except AssetStateError as exc:
+        return _redirect_with_asset_error("/rule-drafts", exc)
+    return RedirectResponse(url=f"/rule-drafts?source_document_id={document.id}", status_code=303)
 
 
 @router.post("/rule-drafts/generate")

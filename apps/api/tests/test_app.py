@@ -71,6 +71,67 @@ def test_asset_registry_uses_injected_json_store(tmp_path: Path) -> None:
     assert reloaded.content_hash == draft.content_hash
 
 
+def test_asset_source_document_api_saves_and_splits_policy_text(client: TestClient) -> None:
+    source_text = """
+第一条 预付款比例
+采购合同预付款原则上不得超过合同总价 25%。
+
+第二条 例外审批
+超过比例时应补充采购负责人和财务负责人例外审批。
+
+第三条 材料处理
+缺少审批材料的合同应退回补充材料。
+""".strip()
+    create_response = client.post(
+        "/api/asset-source-documents",
+        json={
+            "name": "采购预付款管理制度 v1",
+            "source_text": source_text,
+            "source_type": "policy_document",
+        },
+    )
+
+    assert create_response.status_code == 201
+    document = create_response.json()["document"]
+    assert document["id"].startswith("source-doc-")
+    assert document["content_hash"]
+    assert len(document["chunks"]) == 3
+    assert document["chunks"][0]["title"].startswith("第一条")
+    assert document["chunks"][0]["char_start"] == 0
+
+    list_response = client.get("/api/asset-source-documents")
+    assert list_response.status_code == 200
+    assert list_response.json()["total"] == 1
+    assert "content_text" not in list_response.json()["items"][0]
+    assert list_response.json()["items"][0]["content_preview"].startswith("第一条")
+
+    detail_response = client.get(f"/api/asset-source-documents/{document['id']}")
+    assert detail_response.status_code == 200
+    assert detail_response.json()["document"]["content_text"] == source_text
+
+
+def test_rule_drafts_page_imports_source_document_and_shows_chunks(client: TestClient) -> None:
+    response = client.post(
+        "/asset-source-documents/create",
+        data={
+            "name": "服务合同续约经验",
+            "source_type": "experience_document",
+            "source_text": "第一条 自动续约\n服务合同自动续约应保留人工确认节点。\n\n第二条 提前通知\n续约前应提前 30 日通知业务负责人。",
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    location = response.headers["location"]
+    assert location.startswith("/rule-drafts?source_document_id=source-doc-")
+
+    page_response = client.get(location)
+    assert page_response.status_code == 200
+    assert "服务合同续约经验" in page_response.text
+    assert "切分结果" in page_response.text
+    assert "自动续约" in page_response.text
+
+
 def test_review_profiles_and_assets_are_seeded(client: TestClient) -> None:
     profiles_response = client.get("/api/review-profiles")
     assets_response = client.get("/api/assets")

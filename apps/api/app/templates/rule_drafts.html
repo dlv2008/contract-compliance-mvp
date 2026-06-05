@@ -16,8 +16,116 @@
     <article class="panel">
         <div class="panel-head">
             <div>
-                <h3>导入制度文档</h3>
-                <p class="panel-subtitle">当前实现使用可控草稿生成器模拟 LLM 结构化输出，便于本地稳定演示。</p>
+                <h3>制度来源文档</h3>
+                <p class="panel-subtitle">先保存制度或经验文档，系统会记录来源 hash 并切分为 chunks，后续 LLM 草稿生成必须引用这些来源。</p>
+            </div>
+        </div>
+        <form class="upload-form" action="/asset-source-documents/create" method="post" enctype="multipart/form-data">
+            <label class="form-row">
+                <span>文档名称</span>
+                <input class="input" name="name" required value="采购预付款管理制度 v1" />
+            </label>
+            <label class="form-row">
+                <span>来源类型</span>
+                <select class="input" name="source_type">
+                    <option value="policy_document">公司制度</option>
+                    <option value="experience_document">经验文档</option>
+                    <option value="checklist">审核清单</option>
+                </select>
+            </label>
+            <label class="form-row">
+                <span>上传文本文件</span>
+                <input class="input" type="file" name="file" accept=".txt,.md" />
+            </label>
+            <label class="form-row">
+                <span>或粘贴制度内容</span>
+                <textarea class="input textarea" name="source_text" rows="8">第一条 采购合同预付款原则上不得超过合同总价 25%。
+第二条 超过预付款比例时，应补充采购负责人和财务负责人例外审批。
+第三条 缺少审批材料的合同应退回补充材料。</textarea>
+            </label>
+            <button class="button-primary" type="submit">保存并切分来源文档</button>
+        </form>
+    </article>
+
+    <aside class="panel">
+        <div class="panel-head">
+            <h3>生效路径</h3>
+        </div>
+        <ol class="ordered-list">
+            <li>导入制度来源文档</li>
+            <li>确认 chunks 与来源 hash</li>
+            <li>基于 chunks 生成 draft 草稿</li>
+            <li>审核通过为 approved</li>
+            <li>发布为 active 资产</li>
+            <li>复制配置集并绑定 active 资产</li>
+            <li>发布配置集新版后用于合同上传</li>
+        </ol>
+    </aside>
+</section>
+
+<section class="panel">
+    <div class="panel-head">
+        <div>
+            <h3>来源文档库</h3>
+            <p class="panel-subtitle">每个文档保存原文 hash 和切分结果，用于后续追踪规则草稿来自哪一段制度。</p>
+        </div>
+    </div>
+    <div class="asset-list">
+        {% for document in data.source_documents %}
+        <article class="asset-card">
+            <div class="asset-card-main">
+                <div class="asset-card-title">
+                    <span class="asset-type">{{ document.source_type }}</span>
+                    <strong>{{ document.name }}</strong>
+                    <span class="pill">{{ document.chunks | length }} chunks</span>
+                </div>
+                <dl class="compact-dl">
+                    <div><dt>ID</dt><dd>{{ document.id }}</dd></div>
+                    <div><dt>来源 Hash</dt><dd>{{ document.content_hash[:12] }}</dd></div>
+                    <div><dt>创建时间</dt><dd>{{ document.created_at }}</dd></div>
+                </dl>
+            </div>
+            <div class="asset-actions">
+                <a class="button-secondary" href="/rule-drafts?source_document_id={{ document.id }}">查看切分</a>
+            </div>
+        </article>
+        {% else %}
+        <div class="empty-state">
+            <strong>还没有来源文档</strong>
+            <p>先从上方上传或粘贴一份制度文本。</p>
+        </div>
+        {% endfor %}
+    </div>
+</section>
+
+{% if data.selected_source_document %}
+<section class="panel">
+    <div class="panel-head">
+        <div>
+            <h3>切分结果</h3>
+            <p class="panel-subtitle">{{ data.selected_source_document.name }} · {{ data.selected_source_document.content_hash[:12] }}</p>
+        </div>
+    </div>
+    <div class="source-chunk-list">
+        {% for chunk in data.selected_source_document.chunks %}
+        <article class="source-chunk">
+            <div class="source-chunk-head">
+                <strong>{{ chunk.sequence_no }}. {{ chunk.title }}</strong>
+                <span>{{ chunk.char_start }}-{{ chunk.char_end }}</span>
+            </div>
+            <p>{{ chunk.text }}</p>
+        </article>
+        {% endfor %}
+    </div>
+</section>
+{% endif %}
+
+<section class="asset-layout">
+    <article class="panel">
+        <div class="panel-head">
+            <div>
+                <h3>规则草稿生成</h3>
+                <p class="panel-subtitle">本轮仍保留稳定的本地草稿生成器；下一步会改为读取来源 chunks 并调用 LLM 输出结构化草稿。</p>
             </div>
         </div>
         <form class="upload-form" action="/rule-drafts/generate" method="post">
@@ -31,7 +139,7 @@
             </label>
             <label class="form-row">
                 <span>制度/经验文档内容</span>
-                <textarea class="input textarea" name="source_text" rows="8" required>采购合同预付款原则上不得超过合同总价 25%，超过时需要补充采购和财务例外审批。</textarea>
+                <textarea class="input textarea" name="source_text" rows="6" required>{% if data.selected_source_document %}{{ data.selected_source_document.content_text }}{% else %}采购合同预付款原则上不得超过合同总价 25%，超过时需要补充采购和财务例外审批。{% endif %}</textarea>
             </label>
             <div class="checkbox-row">
                 <label><input type="checkbox" name="include_semantic_rule" value="true" /> 同时生成语义规则草稿</label>
@@ -43,17 +151,9 @@
 
     <aside class="panel">
         <div class="panel-head">
-            <h3>生效路径</h3>
+            <h3>当前边界</h3>
         </div>
-        <ol class="ordered-list">
-            <li>生成 draft 草稿</li>
-            <li>审核通过为 approved</li>
-            <li>发布为 active 资产</li>
-            <li>复制配置集为新版草稿</li>
-            <li>绑定 active 资产</li>
-            <li>发布配置集新版</li>
-            <li>上传合同时选择新版配置集</li>
-        </ol>
+        <p class="panel-subtitle">Step 3 只完成制度来源导入和切分。LLM 读取 chunks、输出结构化 hard_rule/semantic_rule/extraction_rule 会在 Step 4 实现。</p>
     </aside>
 </section>
 

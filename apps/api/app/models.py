@@ -149,6 +149,31 @@ class ConfigAsset(BaseModel):
     updated_at: str | None = None
 
 
+class AssetSourceChunk(BaseModel):
+    id: str
+    document_id: str
+    sequence_no: int
+    title: str
+    text: str
+    char_start: int = 0
+    char_end: int = 0
+    parser_source: str = "static-policy-splitter-v1"
+    status: str = "ready"
+
+
+class AssetSourceDocument(BaseModel):
+    id: str
+    source_type: str = "policy_document"
+    name: str
+    content_text: str
+    content_hash: str
+    chunks: list[AssetSourceChunk] = Field(default_factory=list)
+    metadata: dict = Field(default_factory=dict)
+    created_by: str = "reviewer"
+    created_at: str | None = None
+    updated_at: str | None = None
+
+
 class ReviewProfileAssetRef(BaseModel):
     asset_id: str
     asset_type: str
