@@ -84,8 +84,13 @@
         <div class="field-block">
             <h4>关键字段</h4>
             {% for field in data.fields %}
-            <div class="field-row">
-                <span>{{ field.label }}</span>
+            <div class="field-row field-row-{{ field.status }}">
+                <span>
+                    {{ field.label }}
+                    {% if field.status == "candidate" %}
+                    <em class="field-status">候选</em>
+                    {% endif %}
+                </span>
                 <strong>{{ field.value }}</strong>
             </div>
             {% endfor %}

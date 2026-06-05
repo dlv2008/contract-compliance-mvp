@@ -391,18 +391,31 @@ class PostgresTaskStore:
             cur.execute(
                 """
                 INSERT INTO document_clause (
-                    task_id, clause_id, title, text, status, sequence_no, positions, version
+                    task_id, clause_id, title, text, status, sequence_no, parser_source, chunk_id, positions, version
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (task_id, clause_id, version) DO UPDATE SET
                     title = EXCLUDED.title,
                     text = EXCLUDED.text,
                     status = EXCLUDED.status,
                     sequence_no = EXCLUDED.sequence_no,
+                    parser_source = EXCLUDED.parser_source,
+                    chunk_id = EXCLUDED.chunk_id,
                     positions = EXCLUDED.positions,
                     updated_at = now()
                 """,
-                (task.id, clause.id, clause.title, clause.text, clause.status, index, Jsonb({}), 1),
+                (
+                    task.id,
+                    clause.id,
+                    clause.title,
+                    clause.text,
+                    clause.status,
+                    index,
+                    clause.parser_source,
+                    clause.parser_template_id,
+                    Jsonb({}),
+                    1,
+                ),
             )
 
         cur.execute("DELETE FROM extracted_fact WHERE task_id = %s", (task.id,))

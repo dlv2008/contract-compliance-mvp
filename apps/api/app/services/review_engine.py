@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from app.config import get_settings
 from app.models import (
     AgentTraceEvent,
     Clause,
@@ -18,6 +19,7 @@ from app.models import (
     TaskRecord,
     WorkflowStep,
 )
+from app.services.llm import LLMClient
 
 
 CONTRACT_TYPE_LABELS = {
@@ -122,17 +124,18 @@ def analyze_contract(
 ) -> TaskRecord:
     normalized_text = contract_text.replace("\r\n", "\n").strip()
     resolved_name = (contract_name or extract_contract_name(normalized_text) or Path(source_filename).stem).strip()
-    clauses = parse_clauses(normalized_text)
+    clauses = parse_clauses(normalized_text, rule_context=rule_context)
     contract_type = detect_contract_type(resolved_name, normalized_text)
-    facts = extract_facts(resolved_name, contract_type, clauses, normalized_text)
+    facts = extract_facts(resolved_name, contract_type, clauses, normalized_text, rule_context=rule_context)
     risks = evaluate_rules(contract_type, facts, rule_context=rule_context)
+    apply_llm_extraction_fallback(facts, clauses, normalized_text, contract_type, rule_context=rule_context)
     clauses = apply_clause_status(clauses, risks)
-    extracted_fields = build_extracted_fields(contract_type, facts)
+    extracted_fields = build_extracted_fields(contract_type, facts, rule_context=rule_context)
     overall_risk = derive_overall_risk(risks)
     status = derive_status(overall_risk)
     decision = derive_decision(overall_risk)
     created_at = created_at or datetime.now(timezone.utc).isoformat(timespec="seconds")
-    workflow_steps = build_workflow_steps(created_at, status)
+    workflow_steps = build_workflow_steps(created_at, status, clauses=clauses)
     agent_trace = build_agent_trace(created_at, contract_type, clauses, extracted_fields, risks, status)
     report_snapshot = build_report_snapshot(resolved_name, risks, decision)
     return TaskRecord(
@@ -243,7 +246,13 @@ def build_review_payload(
             {"label": "首要规则", "value": top_rule},
         ],
         "clauses": [
-            {"id": clause.id, "title": clause.title, "status": clause.status}
+            {
+                "id": clause.id,
+                "title": clause.title,
+                "status": clause.status,
+                "parser_source": clause.parser_source,
+                "parser_template_id": clause.parser_template_id,
+            }
             for clause in task.clauses
         ],
         "contract_excerpt": [
@@ -252,6 +261,8 @@ def build_review_payload(
                 "title": clause.title,
                 "text": clause.text,
                 "status": clause.status,
+                "parser_source": clause.parser_source,
+                "parser_template_id": clause.parser_template_id,
             }
             for clause in task.clauses
         ],
@@ -305,6 +316,7 @@ def build_review_payload(
                 "at": event.at,
                 "type": event.type,
                 "message": event.message,
+                "payload": event.payload,
             }
             for event in task.agent_trace[-8:]
         ],
@@ -474,28 +486,94 @@ def build_object_storage_payload(object_storage: ObjectStorageProbe | None) -> d
     }
 
 
-def parse_clauses(text: str) -> list[Clause]:
-    matches = list(CLAUSE_HEADER_RE.finditer(text))
+def parse_clauses(text: str, rule_context: dict[str, Any] | None = None) -> list[Clause]:
+    templates = (rule_context or {}).get("clause_parse_templates") or []
+    for template in templates:
+        clauses = parse_clauses_with_template(text, template)
+        if clauses:
+            return clauses
+    return parse_clauses_with_fallback(text, fallback="paragraph_split")
+
+
+def parse_clauses_with_template(text: str, template: dict[str, Any]) -> list[Clause]:
+    pattern = template.get("header_pattern")
+    if not isinstance(pattern, str) or not pattern.strip():
+        return []
+    try:
+        header_re = re.compile(pattern, re.MULTILINE)
+    except re.error:
+        return []
+    matches = list(header_re.finditer(text))
     if not matches:
-        sections = [section.strip() for section in re.split(r"\n{2,}", text) if section.strip()]
-        return [
-            Clause(id=f"C{index:03d}", title=f"段落 {index}", text=section)
-            for index, section in enumerate(sections, start=1)
-        ]
+        fallback = str(template.get("fallback") or "")
+        return parse_clauses_with_fallback(
+            text,
+            fallback=fallback,
+            parser_template_id=str(template.get("asset_id") or ""),
+            parser_schema_version=str(template.get("schema_version") or ""),
+        )
 
     clauses: list[Clause] = []
     for index, match in enumerate(matches):
         start = match.end()
         end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
         body = text[start:end].strip()
+        clause_id = extract_match_group(match, "id") or f"C{index + 1:03d}"
+        title = extract_match_group(match, "title") or match.group(0).strip()
         clauses.append(
             Clause(
-                id=match.group("id").strip(),
-                title=match.group("title").strip(),
+                id=clause_id.strip(),
+                title=title.strip(),
                 text=body,
+                parser_source="asset-template",
+                parser_template_id=str(template.get("asset_id") or ""),
+                parser_schema_version=str(template.get("schema_version") or ""),
             )
         )
     return clauses
+
+
+def parse_clauses_with_fallback(
+    text: str,
+    *,
+    fallback: str,
+    parser_template_id: str | None = None,
+    parser_schema_version: str | None = None,
+) -> list[Clause]:
+    source = f"fallback:{fallback or 'paragraph_split'}"
+    if fallback == "legacy_clause_header":
+        matches = list(CLAUSE_HEADER_RE.finditer(text))
+        if matches:
+            return [
+                Clause(
+                    id=(extract_match_group(match, "id") or f"C{index + 1:03d}").strip(),
+                    title=(extract_match_group(match, "title") or match.group(0)).strip(),
+                    text=text[match.end(): matches[index + 1].start() if index + 1 < len(matches) else len(text)].strip(),
+                    parser_source=source,
+                    parser_template_id=parser_template_id,
+                    parser_schema_version=parser_schema_version,
+                )
+                for index, match in enumerate(matches)
+            ]
+    sections = [section.strip() for section in re.split(r"\n{2,}", text) if section.strip()]
+    return [
+        Clause(
+            id=f"C{index:03d}",
+            title=f"段落 {index}",
+            text=section,
+            parser_source=source,
+            parser_template_id=parser_template_id,
+            parser_schema_version=parser_schema_version,
+        )
+        for index, section in enumerate(sections, start=1)
+    ]
+
+
+def extract_match_group(match: re.Match[str], group_name: str) -> str | None:
+    if group_name not in match.re.groupindex:
+        return None
+    value = match.group(group_name)
+    return value.strip() if value else None
 
 
 def extract_contract_name(text: str) -> str | None:
@@ -524,6 +602,7 @@ def extract_facts(
     contract_type: str,
     clauses: list[Clause],
     text: str,
+    rule_context: dict[str, Any] | None = None,
 ) -> dict[str, dict[str, Any]]:
     facts: dict[str, dict[str, Any]] = {}
     set_fact(facts, "contract_name", contract_name)
@@ -653,7 +732,258 @@ def extract_facts(
             and any(keyword in liability_text for keyword in ["甲方如逾期付款", "全部损失", "预期收益损失", "预期收益"])
         )
     set_fact(facts, "liability.reciprocal", liability_reciprocal, ids_of([liability_clause]))
+    apply_extraction_rules(facts, clauses, text, rule_context=rule_context)
     return facts
+
+
+def apply_extraction_rules(
+    facts: dict[str, dict[str, Any]],
+    clauses: list[Clause],
+    text: str,
+    *,
+    rule_context: dict[str, Any] | None = None,
+) -> None:
+    for asset_rule in (rule_context or {}).get("extraction_rules") or []:
+        for rule in configured_extraction_rules(asset_rule):
+            fact_key = first_string(rule, ["fact_key", "target_field", "field_key", "key"])
+            if not fact_key:
+                continue
+            extracted = extract_fact_by_rule(text, clauses, rule)
+            if extracted is None:
+                continue
+            value, evidence_ids = extracted
+            set_fact(facts, fact_key, value, evidence_ids)
+
+
+def apply_llm_extraction_fallback(
+    facts: dict[str, dict[str, Any]],
+    clauses: list[Clause],
+    text: str,
+    contract_type: str,
+    *,
+    rule_context: dict[str, Any] | None = None,
+) -> None:
+    prompt_template = active_prompt_template(rule_context, purpose="field_extraction")
+    if not prompt_template:
+        return
+
+    missing_fields = [
+        field_def
+        for field_def in configured_extraction_fields(contract_type, rule_context=rule_context)
+        if field_def["key"] != "contract_type" and fact_status(facts, field_def["key"]) == "missing"
+    ]
+    if not missing_fields:
+        return
+
+    candidates = generate_field_extraction_candidates(
+        text=text,
+        clauses=clauses,
+        missing_fields=missing_fields,
+        prompt_template=prompt_template,
+    )
+    for candidate in candidates:
+        key = candidate.get("key")
+        value = candidate.get("value")
+        if not isinstance(key, str) or key not in {item["key"] for item in missing_fields}:
+            continue
+        if value is None or value == "":
+            continue
+        evidence_ids = [
+            item
+            for item in list_strings(candidate.get("evidence_clause_ids"))
+            if any(clause.id == item for clause in clauses)
+        ]
+        if not evidence_ids:
+            evidence_ids = evidence_ids_for_fragment(clauses, str(value))
+        set_fact(
+            facts,
+            key,
+            value,
+            evidence_ids,
+            status="candidate",
+            metadata={
+                "source": "llm-fallback",
+                "prompt_template_id": prompt_template.get("asset_id"),
+                "confidence": coerce_number(candidate.get("confidence")),
+                "reasoning_summary": candidate.get("reasoning_summary"),
+            },
+        )
+
+
+def active_prompt_template(rule_context: dict[str, Any] | None, *, purpose: str) -> dict[str, Any] | None:
+    for prompt_template in (rule_context or {}).get("prompt_templates") or []:
+        if prompt_template.get("purpose") == purpose:
+            return prompt_template
+    return None
+
+
+def generate_field_extraction_candidates(
+    *,
+    text: str,
+    clauses: list[Clause],
+    missing_fields: list[dict[str, str]],
+    prompt_template: dict[str, Any],
+) -> list[dict[str, Any]]:
+    settings = get_settings()
+    provider = settings.llm_draft_provider
+    if provider == "mock" or (provider == "auto" and not settings.llm_api_key):
+        return mock_field_extraction_candidates(text=text, clauses=clauses, missing_fields=missing_fields)
+    try:
+        result = LLMClient(settings).complete_json(
+            messages=build_field_extraction_messages(
+                text=text,
+                clauses=clauses,
+                missing_fields=missing_fields,
+                prompt_template=prompt_template,
+            ),
+            max_tokens=1400,
+        )
+    except Exception:  # noqa: BLE001
+        if provider == "auto":
+            return mock_field_extraction_candidates(text=text, clauses=clauses, missing_fields=missing_fields)
+        return []
+    payload = result.get("parsed_json")
+    if not isinstance(payload, dict):
+        return []
+    raw_candidates = payload.get("fields") or payload.get("candidates")
+    if not isinstance(raw_candidates, list):
+        return []
+    return [item for item in raw_candidates if isinstance(item, dict)]
+
+
+def build_field_extraction_messages(
+    *,
+    text: str,
+    clauses: list[Clause],
+    missing_fields: list[dict[str, str]],
+    prompt_template: dict[str, Any],
+) -> list[dict[str, str]]:
+    clause_text = "\n\n".join(f"[{clause.id}] {clause.title}\n{clause.text}" for clause in clauses[:24])
+    field_text = "\n".join(f"- {field['key']}: {field['label']}" for field in missing_fields)
+    return [
+        {
+            "role": "system",
+            "content": (
+                "你是合同合规审查字段抽取助手。只输出合法 JSON 对象，不输出 Markdown。"
+                "输出格式为 {\"fields\":[{\"key\":\"...\",\"value\":\"...\","
+                "\"confidence\":0.0,\"evidence_clause_ids\":[\"C001\"],"
+                "\"reasoning_summary\":\"...\"}]}。"
+                "只为用户给出的 missing 字段生成候选；没有证据时不要编造。"
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                f"Prompt 模板：{prompt_template}\n"
+                f"需要抽取的 missing 字段：\n{field_text}\n\n"
+                f"条款：\n{clause_text}\n\n"
+                f"完整合同文本：\n{text[:8000]}"
+            ),
+        },
+    ]
+
+
+def mock_field_extraction_candidates(
+    *,
+    text: str,
+    clauses: list[Clause],
+    missing_fields: list[dict[str, str]],
+) -> list[dict[str, Any]]:
+    candidates: list[dict[str, Any]] = []
+    for field_def in missing_fields:
+        key = field_def["key"]
+        label = field_def["label"]
+        value = mock_extract_by_label(text, label)
+        if value is None and "编号" in label:
+            value = search_text(r"(?:例外审批编号|审批编号|项目编号)[:：]\s*([A-Z]+-\d+)", text)
+        if value is None:
+            continue
+        candidates.append(
+            {
+                "key": key,
+                "value": value,
+                "confidence": 0.82,
+                "evidence_clause_ids": evidence_ids_for_fragment(clauses, value),
+                "reasoning_summary": f"mock fallback matched label {label}",
+            }
+        )
+    return candidates
+
+
+def mock_extract_by_label(text: str, label: str) -> str | None:
+    if not label:
+        return None
+    return search_text(rf"{re.escape(label)}[:：]\s*([^\n。；;]+)", text)
+
+
+def configured_extraction_rules(asset_rule: dict[str, Any]) -> list[dict[str, Any]]:
+    rules: list[dict[str, Any]] = []
+    if first_string(asset_rule, ["fact_key", "target_field", "field_key", "key"]):
+        rules.append(asset_rule)
+    for key in ["rules", "extraction_rules", "extraction_targets"]:
+        raw_items = asset_rule.get(key)
+        if isinstance(raw_items, list):
+            rules.extend(item for item in raw_items if isinstance(item, dict))
+    return rules
+
+
+def extract_fact_by_rule(
+    text: str,
+    clauses: list[Clause],
+    rule: dict[str, Any],
+) -> tuple[Any, list[str]] | None:
+    for pattern in extraction_patterns(rule):
+        try:
+            match = re.search(pattern, text, re.MULTILINE)
+        except re.error:
+            continue
+        if not match:
+            continue
+        value = extract_regex_value(match)
+        evidence_ids = evidence_ids_for_fragment(clauses, match.group(0))
+        return normalize_extracted_value(value, rule), evidence_ids
+
+    keywords = list_strings(rule.get("keywords")) or list_strings(rule.get("keyword"))
+    for keyword in keywords:
+        if keyword not in text:
+            continue
+        evidence_ids = evidence_ids_for_fragment(clauses, keyword)
+        if str(rule.get("value_type") or "").lower() == "boolean":
+            return True, evidence_ids
+        return str(rule.get("value") or keyword), evidence_ids
+    return None
+
+
+def extraction_patterns(rule: dict[str, Any]) -> list[str]:
+    patterns: list[str] = []
+    for key in ["pattern", "regex", "regex_pattern", "extraction_pattern", "patterns"]:
+        patterns.extend(list_strings(rule.get(key)))
+    return patterns
+
+
+def extract_regex_value(match: re.Match[str]) -> str:
+    if "value" in match.re.groupindex:
+        return match.group("value").strip()
+    if match.lastindex:
+        return match.group(1).strip()
+    return match.group(0).strip()
+
+
+def normalize_extracted_value(value: Any, rule: dict[str, Any]) -> Any:
+    value_type = str(rule.get("value_type") or rule.get("type") or "").lower()
+    text_value = str(value).strip()
+    if value_type in {"percent", "percentage"}:
+        number = coerce_number(text_value)
+        return f"{trim_number(str(number))}%" if number is not None else text_value
+    if value_type in {"amount", "money"}:
+        number = coerce_number(text_value)
+        return f"{trim_number(str(number))} 元" if number is not None else text_value
+    if value_type == "boolean":
+        if text_value.lower() in {"true", "yes", "1"} or text_value in {"是", "有", "存在"}:
+            return True
+        if text_value.lower() in {"false", "no", "0"} or text_value in {"否", "无", "不存在"}:
+            return False
+    return text_value
 
 
 def evaluate_rules(
@@ -863,22 +1193,70 @@ def build_risk(
 def build_extracted_fields(
     contract_type: str,
     facts: dict[str, dict[str, Any]],
+    rule_context: dict[str, Any] | None = None,
 ) -> list[ExtractedField]:
     fields: list[ExtractedField] = []
-    for key in DISPLAY_FIELD_ORDER:
+    field_defs = configured_extraction_fields(contract_type, rule_context=rule_context)
+    for field_def in field_defs:
+        key = field_def["key"]
         value = fact_value(facts, key)
         if key == "contract_type":
             value = CONTRACT_TYPE_LABELS.get(contract_type, "未识别合同")
         fields.append(
             ExtractedField(
                 key=key,
-                label=FIELD_LABELS[key],
+                label=field_def["label"],
                 value=format_field_value(value),
                 status=fact_status(facts, key),
                 evidence_clause_ids=fact_evidence_ids(facts, key),
             )
         )
     return fields
+
+
+def configured_extraction_fields(
+    contract_type: str,
+    *,
+    rule_context: dict[str, Any] | None = None,
+) -> list[dict[str, str]]:
+    schemas = (rule_context or {}).get("extraction_schemas") or []
+    schema = schemas[-1] if schemas else {}
+    raw_fields = schema.get("fields") if isinstance(schema, dict) else None
+    if not isinstance(raw_fields, list) or not raw_fields:
+        return [{"key": key, "label": FIELD_LABELS.get(key, key)} for key in DISPLAY_FIELD_ORDER]
+
+    label_overrides = extraction_label_overrides(rule_context)
+    fields: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for raw_field in raw_fields:
+        key: str | None = None
+        label: str | None = None
+        if isinstance(raw_field, str):
+            key = raw_field
+        elif isinstance(raw_field, dict):
+            key = first_string(raw_field, ["key", "fact_key", "field_key", "target_field", "name"])
+            label = first_string(raw_field, ["label", "title", "display_name"])
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        fields.append({"key": key, "label": label or label_overrides.get(key) or FIELD_LABELS.get(key, key)})
+
+    if not fields:
+        return [{"key": key, "label": FIELD_LABELS.get(key, key)} for key in DISPLAY_FIELD_ORDER]
+    if "contract_type" not in seen:
+        fields.insert(0, {"key": "contract_type", "label": FIELD_LABELS["contract_type"]})
+    return fields
+
+
+def extraction_label_overrides(rule_context: dict[str, Any] | None = None) -> dict[str, str]:
+    labels: dict[str, str] = {}
+    for asset_rule in (rule_context or {}).get("extraction_rules") or []:
+        for rule in configured_extraction_rules(asset_rule):
+            key = first_string(rule, ["fact_key", "target_field", "field_key", "key"])
+            label = first_string(rule, ["label", "title", "display_name"])
+            if key and label:
+                labels[key] = label
+    return labels
 
 
 def apply_clause_status(clauses: list[Clause], risks: list[RiskFinding]) -> list[Clause]:
@@ -968,6 +1346,31 @@ def merge_ids(*id_groups: list[str]) -> list[str]:
     return merged
 
 
+def list_strings(value: Any) -> list[str]:
+    if isinstance(value, str):
+        return [value] if value else []
+    if isinstance(value, list):
+        return [str(item) for item in value if item is not None and str(item)]
+    return []
+
+
+def first_string(payload: dict[str, Any], keys: list[str]) -> str | None:
+    for key in keys:
+        value = payload.get(key)
+        if isinstance(value, str) and value:
+            return value
+    return None
+
+
+def evidence_ids_for_fragment(clauses: list[Clause], fragment: str) -> list[str]:
+    if not fragment:
+        return []
+    for clause in clauses:
+        if fragment in clause.text or fragment in clause.title:
+            return [clause.id]
+    return []
+
+
 def search_text(pattern: str, text: str) -> str | None:
     match = re.search(pattern, text)
     if not match:
@@ -984,12 +1387,16 @@ def set_fact(
     key: str,
     value: Any,
     evidence_clause_ids: list[str] | None = None,
+    *,
+    status: str | None = None,
+    metadata: dict[str, Any] | None = None,
 ) -> None:
-    status = "missing" if value is None or value == "" else "present"
+    resolved_status = status or ("missing" if value is None or value == "" else "present")
     facts[key] = {
         "value": value,
-        "status": status,
+        "status": resolved_status,
         "evidence_clause_ids": evidence_clause_ids or [],
+        "metadata": metadata or {},
     }
 
 
@@ -1076,11 +1483,13 @@ def render_review_action(action_type: str) -> str:
     return labels.get(action_type, action_type)
 
 
-def build_workflow_steps(created_at: str, status: str) -> list[WorkflowStep]:
+def build_workflow_steps(created_at: str, status: str, *, clauses: list[Clause] | None = None) -> list[WorkflowStep]:
     review_status = "waiting" if status == "pending_review" else "done"
+    parser_sources = {clause.parser_source for clause in clauses or []}
+    parsing_status = "warning" if any(source.startswith("fallback:") for source in parser_sources) else "done"
     return [
         WorkflowStep(key="uploaded", label="原件存档", status="done", updated_at=created_at),
-        WorkflowStep(key="parsing", label="条款解析", status="done", updated_at=created_at),
+        WorkflowStep(key="parsing", label="条款解析", status=parsing_status, updated_at=created_at),
         WorkflowStep(key="extracting", label="事实抽取", status="done", updated_at=created_at),
         WorkflowStep(key="evaluating", label="规则裁决", status="done", updated_at=created_at),
         WorkflowStep(key="review", label="人工复核", status=review_status, updated_at=created_at),
@@ -1097,6 +1506,7 @@ def build_agent_trace(
     status: str,
 ) -> list[AgentTraceEvent]:
     awaiting_review = status == "pending_review"
+    llm_candidate_fields = [field.key for field in extracted_fields if field.status == "candidate"]
     return [
         AgentTraceEvent(
             at=created_at,
@@ -1108,13 +1518,23 @@ def build_agent_trace(
             at=created_at,
             type="document.parse",
             message=f"完成条款解析，生成 {len(clauses)} 个可审计条款片段。",
-            payload={"clause_count": len(clauses)},
+            payload={
+                "clause_count": len(clauses),
+                "parser_source": clauses[0].parser_source if clauses else "none",
+                "parser_template_id": clauses[0].parser_template_id if clauses else None,
+                "parser_schema_version": clauses[0].parser_schema_version if clauses else None,
+                "fallback_used": bool(clauses and clauses[0].parser_source.startswith("fallback:")),
+            },
         ),
         AgentTraceEvent(
             at=created_at,
             type="fact.extract",
             message=f"完成关键事实抽取，当前输出 {len(extracted_fields)} 个字段。",
-            payload={"field_count": len(extracted_fields)},
+            payload={
+                "field_count": len(extracted_fields),
+                "llm_candidate_count": len(llm_candidate_fields),
+                "llm_candidate_fields": llm_candidate_fields,
+            },
         ),
         AgentTraceEvent(
             at=created_at,

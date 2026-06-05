@@ -8,6 +8,9 @@ class Clause(BaseModel):
     title: str
     text: str
     status: str = "ok"
+    parser_source: str = "local-default"
+    parser_template_id: str | None = None
+    parser_schema_version: str | None = None
 
 
 class ExtractedField(BaseModel):

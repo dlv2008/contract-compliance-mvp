@@ -663,6 +663,18 @@ SEED_ASSETS: list[ConfigAsset] = [
         description="指导 LLM/草稿生成器从制度文档中提取规则草稿。",
     ),
     _asset(
+        "asset-prompt-field-extraction-v1",
+        "prompt_template",
+        "低置信字段抽取候选 Prompt",
+        content={
+            "purpose": "field_extraction",
+            "output_schema": "field-extraction-candidates-v1",
+            "instructions": "仅为静态规则未提取到的字段生成候选值、证据条款和置信度，不直接改变规则裁决。",
+        },
+        schema_version="prompt-template-v1",
+        description="指导 LLM 对 missing 字段生成候选事实，供合同审核员确认。",
+    ),
+    _asset(
         "asset-prompt-semantic-rule-v1",
         "prompt_template",
         "语义规则结构化判断 Prompt",
@@ -1776,26 +1788,75 @@ class AssetRegistry:
         threshold = 30
         source_asset_id = "asset-hardrule-prepay-v1"
         hard_rules = []
+        clause_parse_templates = []
+        extraction_schemas = []
+        extraction_rules = []
+        prompt_templates = []
         for ref in profile.assets:
             asset = next((item for item in assets if item.id == ref.asset_id), None)
-            if not asset or asset.asset_type != "hard_rule" or asset.status != "active":
+            if not asset or asset.status != "active":
                 continue
-            hard_rules.append(
-                {
-                    "asset_id": asset.id,
-                    "asset_version": asset.version,
-                    "asset_content_hash": asset.content_hash,
-                    **asset.content,
-                }
-            )
-            threshold_condition = self._find_threshold_condition(asset)
-            if threshold_condition is not None:
-                threshold = float(threshold_condition)
-                source_asset_id = asset.id
+            if asset.asset_type == "clause_parse_template":
+                clause_parse_templates.append(
+                    {
+                        "asset_id": asset.id,
+                        "asset_version": asset.version,
+                        "asset_content_hash": asset.content_hash,
+                        "schema_version": asset.schema_version,
+                        **asset.content,
+                    }
+                )
+            if asset.asset_type == "extraction_schema":
+                extraction_schemas.append(
+                    {
+                        "asset_id": asset.id,
+                        "asset_version": asset.version,
+                        "asset_content_hash": asset.content_hash,
+                        "schema_version": asset.schema_version,
+                        **asset.content,
+                    }
+                )
+            if asset.asset_type == "extraction_rule":
+                extraction_rules.append(
+                    {
+                        "asset_id": asset.id,
+                        "asset_version": asset.version,
+                        "asset_content_hash": asset.content_hash,
+                        "schema_version": asset.schema_version,
+                        **asset.content,
+                    }
+                )
+            if asset.asset_type == "prompt_template":
+                prompt_templates.append(
+                    {
+                        "asset_id": asset.id,
+                        "asset_version": asset.version,
+                        "asset_content_hash": asset.content_hash,
+                        "schema_version": asset.schema_version,
+                        **asset.content,
+                    }
+                )
+            if asset.asset_type == "hard_rule":
+                hard_rules.append(
+                    {
+                        "asset_id": asset.id,
+                        "asset_version": asset.version,
+                        "asset_content_hash": asset.content_hash,
+                        **asset.content,
+                    }
+                )
+                threshold_condition = self._find_threshold_condition(asset)
+                if threshold_condition is not None:
+                    threshold = float(threshold_condition)
+                    source_asset_id = asset.id
         return {
             "prepay_threshold": threshold,
             "prepay_threshold_asset_id": source_asset_id,
             "hard_rules": hard_rules,
+            "clause_parse_templates": clause_parse_templates,
+            "extraction_schemas": extraction_schemas,
+            "extraction_rules": extraction_rules,
+            "prompt_templates": prompt_templates,
         }
 
     def execution_status_for_asset_type(self, asset_type: str) -> dict[str, str]:

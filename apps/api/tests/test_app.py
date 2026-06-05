@@ -316,6 +316,309 @@ def test_invalid_asset_draft_cannot_be_approved(client: TestClient) -> None:
     assert "hard_rule 草稿缺少字段" in approve_response.json()["detail"]
 
 
+def test_clause_parse_template_splits_custom_numbering() -> None:
+    from app.services.review_engine import parse_clauses
+
+    contract_text = """
+第1条 合同双方
+甲方：星河科技有限公司
+乙方：云桥科技有限公司
+
+第2条 付款安排
+甲方支付合同总价 20% 作为预付款。
+""".strip()
+    clauses = parse_clauses(
+        contract_text,
+        rule_context={
+            "clause_parse_templates": [
+                {
+                    "asset_id": "asset-clause-article-cn-v1",
+                    "schema_version": "clause-parse-template-v1",
+                    "header_pattern": r"^第(?P<id>\d+)条\s+(?P<title>.+?)$",
+                    "fallback": "paragraph_split",
+                }
+            ]
+        },
+    )
+
+    assert [clause.id for clause in clauses] == ["1", "2"]
+    assert clauses[0].title == "合同双方"
+    assert clauses[0].parser_source == "asset-template"
+    assert clauses[0].parser_template_id == "asset-clause-article-cn-v1"
+
+
+def test_clause_parse_template_fallback_is_visible_in_workflow(client: TestClient) -> None:
+    create_template_response = client.post(
+        "/api/assets",
+        json={
+            "asset_type": "clause_parse_template",
+            "name": "无法匹配模板",
+            "applicability": {"contract_type": "procurement_contract"},
+            "content": {"header_pattern": r"^不会匹配(?P<id>\d+) (?P<title>.+)$", "fallback": "paragraph_split"},
+            "schema_version": "clause-parse-template-v1",
+        },
+    )
+    template = create_template_response.json()["asset"]
+    assert client.post(f"/api/assets/{template['id']}/approve", json={}).status_code == 200
+    active_template = client.post(f"/api/assets/{template['id']}/publish", json={}).json()["asset"]
+
+    clone_response = client.post(
+        "/api/review-profiles/profile-procurement-basic-v1/versions",
+        json={"name": "采购合同解析 fallback 配置"},
+    )
+    profile = clone_response.json()["profile"]
+    bind_response = client.post(
+        f"/api/review-profiles/{profile['id']}/assets",
+        json={"asset_id": active_template["id"], "binding_reason": "fallback parser test"},
+    )
+    assert bind_response.status_code == 200
+    publish_profile_response = client.post(f"/api/review-profiles/{profile['id']}/publish", json={})
+    assert publish_profile_response.status_code == 200
+    active_profile = publish_profile_response.json()["profile"]
+
+    contract_text = """
+# 办公电脑采购合同
+
+第一段 合同双方
+甲方：星河科技有限公司
+乙方：云桥科技有限公司
+
+第二段 付款安排
+甲方支付合同总价 20% 作为预付款。
+""".strip()
+    create_task_response = client.post(
+        "/api/tasks",
+        data={"contract_name": "fallback parser task", "selected_profile_id": active_profile["id"]},
+        files={"file": ("contract.md", contract_text.encode("utf-8"), "text/markdown")},
+    )
+    assert create_task_response.status_code == 201
+    task_id = create_task_response.json()["task"]["id"]
+
+    detail = client.get(f"/api/tasks/{task_id}").json()["task"]
+    parsing_step = next(step for step in detail["workflow_steps"] if step["key"] == "parsing")
+    parse_event = next(event for event in detail["trace"] if event["type"] == "document.parse")
+
+    assert parsing_step["status"] == "warning"
+    assert parse_event["payload"]["fallback_used"] is True
+    assert parse_event["payload"]["parser_template_id"] == active_template["id"]
+
+    clauses_response = client.get(f"/api/tasks/{task_id}/clauses")
+    assert clauses_response.status_code == 200
+    assert clauses_response.json()["items"][0]["parser_source"] == "fallback:paragraph_split"
+    assert clauses_response.json()["items"][0]["chunk_id"] == active_template["id"]
+
+
+def test_extraction_schema_controls_displayed_fields(client: TestClient) -> None:
+    schema_response = client.post(
+        "/api/assets",
+        json={
+            "asset_type": "extraction_schema",
+            "name": "Minimal procurement field schema",
+            "applicability": {"contract_type": "procurement_contract"},
+            "content": {
+                "fields": [
+                    {"key": "contract_type", "label": "合同类型"},
+                    {"key": "payment.prepay_ratio", "label": "预付款比例"},
+                    {"key": "invoice.tax_rate", "label": "税率"},
+                ]
+            },
+        },
+    )
+    assert schema_response.status_code == 201
+    draft_schema = schema_response.json()["asset"]
+    assert client.post(f"/api/assets/{draft_schema['id']}/approve", json={"comment": "checked"}).status_code == 200
+    publish_schema_response = client.post(f"/api/assets/{draft_schema['id']}/publish", json={})
+    assert publish_schema_response.status_code == 200
+    active_schema = publish_schema_response.json()["asset"]
+
+    clone_response = client.post(
+        "/api/review-profiles/profile-procurement-basic-v1/versions",
+        json={"name": "Schema driven procurement profile"},
+    )
+    draft_profile = clone_response.json()["profile"]
+    bind_response = client.post(
+        f"/api/review-profiles/{draft_profile['id']}/assets",
+        json={"asset_id": active_schema["id"], "binding_reason": "display selected fields only"},
+    )
+    assert bind_response.status_code == 200
+    publish_profile_response = client.post(f"/api/review-profiles/{draft_profile['id']}/publish", json={})
+    active_profile = publish_profile_response.json()["profile"]
+
+    contract_text = """
+# 办公电脑采购合同
+
+【A001】合同双方
+甲方：星河科技有限公司
+乙方：上海云桥科技有限公司
+
+【A002】付款方式
+甲方支付合同总价 40% 作为预付款，剩余 60% 在到货验收后支付。
+
+【A003】发票
+乙方应开具增值税专用发票，税率 13%。
+""".strip()
+    create_response = client.post(
+        "/api/tasks",
+        data={"contract_name": "schema display check", "selected_profile_id": active_profile["id"]},
+        files={"file": ("contract.md", contract_text.encode("utf-8"), "text/markdown")},
+    )
+    assert create_response.status_code == 201
+    task_id = create_response.json()["task"]["id"]
+    fields = client.get(f"/api/tasks/{task_id}/facts").json()["items"]
+
+    assert [item["fact_key"] for item in fields] == [
+        "contract_type",
+        "payment.prepay_ratio",
+        "invoice.tax_rate",
+    ]
+    assert next(item for item in fields if item["fact_key"] == "payment.prepay_ratio")["value"] == "40%"
+
+
+def test_extraction_rule_adds_configured_fact(client: TestClient) -> None:
+    schema_response = client.post(
+        "/api/assets",
+        json={
+            "asset_type": "extraction_schema",
+            "name": "Approval field schema",
+            "applicability": {"contract_type": "procurement_contract"},
+            "content": {
+                "fields": [
+                    "contract_type",
+                    {"key": "approval.record_no", "label": "例外审批编号"},
+                    "payment.prepay_ratio",
+                ]
+            },
+        },
+    )
+    extraction_rule_response = client.post(
+        "/api/assets",
+        json={
+            "asset_type": "extraction_rule",
+            "name": "Approval record extractor",
+            "applicability": {"contract_type": "procurement_contract"},
+            "content": {
+                "fact_key": "approval.record_no",
+                "label": "例外审批编号",
+                "regex": r"例外审批编号[:：]\s*(?P<value>[A-Z]+-\d+)",
+                "value_type": "text",
+            },
+        },
+    )
+    assert schema_response.status_code == 201
+    assert extraction_rule_response.status_code == 201
+    draft_schema = schema_response.json()["asset"]
+    draft_rule = extraction_rule_response.json()["asset"]
+    assert client.post(f"/api/assets/{draft_schema['id']}/approve", json={}).status_code == 200
+    assert client.post(f"/api/assets/{draft_rule['id']}/approve", json={}).status_code == 200
+    active_schema = client.post(f"/api/assets/{draft_schema['id']}/publish", json={}).json()["asset"]
+    active_rule = client.post(f"/api/assets/{draft_rule['id']}/publish", json={}).json()["asset"]
+
+    clone_response = client.post(
+        "/api/review-profiles/profile-procurement-basic-v1/versions",
+        json={"name": "Schema and extraction rule profile"},
+    )
+    draft_profile = clone_response.json()["profile"]
+    for asset in [active_schema, active_rule]:
+        assert (
+            client.post(
+                f"/api/review-profiles/{draft_profile['id']}/assets",
+                json={"asset_id": asset["id"], "binding_reason": "configured extraction test"},
+            ).status_code
+            == 200
+        )
+    active_profile = client.post(f"/api/review-profiles/{draft_profile['id']}/publish", json={}).json()["profile"]
+
+    contract_text = """
+# 办公电脑采购合同
+
+【A001】合同双方
+甲方：星河科技有限公司
+乙方：上海云桥科技有限公司
+
+【A002】付款方式
+甲方支付合同总价 45% 作为预付款。例外审批编号：APR-202606。
+""".strip()
+    create_response = client.post(
+        "/api/tasks",
+        data={"contract_name": "configured extraction check", "selected_profile_id": active_profile["id"]},
+        files={"file": ("contract.md", contract_text.encode("utf-8"), "text/markdown")},
+    )
+    assert create_response.status_code == 201
+    task_id = create_response.json()["task"]["id"]
+    fields = client.get(f"/api/tasks/{task_id}/facts").json()["items"]
+    approval_field = next(item for item in fields if item["fact_key"] == "approval.record_no")
+
+    assert approval_field["label"] == "例外审批编号"
+    assert approval_field["value"] == "APR-202606"
+    assert approval_field["status"] == "present"
+    assert approval_field["evidence_clause_ids"]
+
+
+def test_llm_field_extraction_fallback_marks_candidate_field(client: TestClient) -> None:
+    schema_response = client.post(
+        "/api/assets",
+        json={
+            "asset_type": "extraction_schema",
+            "name": "LLM fallback approval field schema",
+            "applicability": {"contract_type": "procurement_contract"},
+            "content": {
+                "fields": [
+                    "contract_type",
+                    {"key": "approval.record_no", "label": "例外审批编号"},
+                    "payment.prepay_ratio",
+                ]
+            },
+        },
+    )
+    assert schema_response.status_code == 201
+    draft_schema = schema_response.json()["asset"]
+    assert client.post(f"/api/assets/{draft_schema['id']}/approve", json={}).status_code == 200
+    active_schema = client.post(f"/api/assets/{draft_schema['id']}/publish", json={}).json()["asset"]
+
+    clone_response = client.post(
+        "/api/review-profiles/profile-procurement-basic-v1/versions",
+        json={"name": "LLM fallback field extraction profile"},
+    )
+    draft_profile = clone_response.json()["profile"]
+    for asset_id in [active_schema["id"], "asset-prompt-field-extraction-v1"]:
+        assert (
+            client.post(
+                f"/api/review-profiles/{draft_profile['id']}/assets",
+                json={"asset_id": asset_id, "binding_reason": "field fallback test"},
+            ).status_code
+            == 200
+        )
+    active_profile = client.post(f"/api/review-profiles/{draft_profile['id']}/publish", json={}).json()["profile"]
+
+    contract_text = """
+# 办公电脑采购合同
+
+【A001】合同双方
+甲方：星河科技有限公司
+乙方：上海云桥科技有限公司
+
+【A002】付款方式
+甲方支付合同总价 45% 作为预付款。例外审批编号：APR-202606。
+""".strip()
+    create_response = client.post(
+        "/api/tasks",
+        data={"contract_name": "llm fallback extraction check", "selected_profile_id": active_profile["id"]},
+        files={"file": ("contract.md", contract_text.encode("utf-8"), "text/markdown")},
+    )
+    assert create_response.status_code == 201
+    task_id = create_response.json()["task"]["id"]
+    fields = client.get(f"/api/tasks/{task_id}/facts").json()["items"]
+    detail = client.get(f"/api/tasks/{task_id}").json()["task"]
+    approval_field = next(item for item in fields if item["fact_key"] == "approval.record_no")
+    fact_event = next(event for event in detail["trace"] if event["type"] == "fact.extract")
+
+    assert approval_field["value"] == "APR-202606"
+    assert approval_field["status"] == "candidate"
+    assert approval_field["evidence_clause_ids"]
+    assert fact_event["payload"]["llm_candidate_count"] == 1
+    assert fact_event["payload"]["llm_candidate_fields"] == ["approval.record_no"]
+
+
 def test_rule_drafts_editor_reports_invalid_json(client: TestClient) -> None:
     draft_response = client.post(
         "/api/rule-drafts/generate",
