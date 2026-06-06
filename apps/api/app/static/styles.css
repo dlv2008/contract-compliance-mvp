@@ -34,6 +34,11 @@ a {
     text-decoration: none;
 }
 
+button:disabled {
+    cursor: not-allowed;
+    opacity: 0.52;
+}
+
 .shell {
     width: min(1320px, calc(100vw - 32px));
     margin: 0 auto;
@@ -1032,6 +1037,52 @@ a {
     border-radius: var(--radius);
     padding: 16px;
     background: rgba(255, 255, 255, 0.72);
+}
+
+.dry-run-gate {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 12px;
+    margin-bottom: 12px;
+    background: rgba(255, 255, 255, 0.72);
+}
+
+.dry-run-gate p {
+    margin: 4px 0 0;
+    color: var(--muted);
+    font-size: 13px;
+}
+
+.dry-run-gate span {
+    flex: 0 0 auto;
+    border-radius: 999px;
+    padding: 5px 9px;
+    font-size: 12px;
+    font-weight: 700;
+}
+
+.dry-run-gate.is-ok {
+    border-color: rgba(36, 118, 93, 0.32);
+    background: rgba(36, 118, 93, 0.08);
+}
+
+.dry-run-gate.is-ok span {
+    color: var(--ok);
+    background: rgba(36, 118, 93, 0.14);
+}
+
+.dry-run-gate.is-blocked {
+    border-color: rgba(168, 111, 16, 0.32);
+    background: rgba(168, 111, 16, 0.08);
+}
+
+.dry-run-gate.is-blocked span {
+    color: var(--warn);
+    background: rgba(168, 111, 16, 0.14);
 }
 
 .dry-run-metrics,

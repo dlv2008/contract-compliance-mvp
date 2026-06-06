@@ -107,6 +107,7 @@ def _profile_detail_data(
         "dry_runs": [record.model_dump() for record in dry_runs],
         "latest_dry_run": dry_runs[0].model_dump() if dry_runs else None,
         "selected_dry_run": selected_dry_run.model_dump() if selected_dry_run else None,
+        "dry_run_gate": dry_run_service.publication_gate_status(profile),
         "error": error,
     }
 
@@ -466,9 +467,14 @@ def bind_profile_asset_form(
 
 @router.post("/review-profiles/{profile_id}/publish")
 def publish_profile_form(profile_id: str, comment: str | None = Form(default=None)) -> RedirectResponse:
+    registry = AssetRegistry()
+    dry_run_service = ProfileDryRunService(registry=registry)
     try:
-        AssetRegistry().publish_profile(profile_id, comment=comment)
-    except (AssetNotFoundError, AssetStateError) as exc:
+        draft_profile = registry.get_profile(profile_id)
+        if draft_profile.status == "draft":
+            dry_run_service.assert_profile_can_publish(draft_profile)
+        registry.publish_profile(profile_id, comment=comment)
+    except (AssetNotFoundError, AssetStateError, ProfileDryRunError) as exc:
         return _redirect_with_asset_error(f"/review-profiles/{profile_id}", exc)
     return RedirectResponse(url=f"/review-profiles/{profile_id}", status_code=303)
 

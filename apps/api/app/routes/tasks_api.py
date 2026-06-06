@@ -390,11 +390,16 @@ def bind_profile_asset(profile_id: str, payload: BindProfileAssetRequest) -> dic
 
 @router.post("/review-profiles/{profile_id}/publish")
 def publish_review_profile(profile_id: str, payload: PublishProfileRequest) -> dict:
+    registry = AssetRegistry()
+    dry_run_service = ProfileDryRunService(registry=registry)
     try:
-        profile = AssetRegistry().publish_profile(profile_id, actor=payload.actor, comment=payload.comment)
+        draft_profile = registry.get_profile(profile_id)
+        if draft_profile.status == "draft":
+            dry_run_service.assert_profile_can_publish(draft_profile)
+        profile = registry.publish_profile(profile_id, actor=payload.actor, comment=payload.comment)
     except AssetNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except AssetStateError as exc:
+    except (AssetStateError, ProfileDryRunError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"profile": profile.model_dump(), "asset_counts": asset_counts(profile)}
 

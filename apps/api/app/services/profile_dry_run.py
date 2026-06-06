@@ -74,6 +74,41 @@ class ProfileDryRunService:
         records = self.list_records(profile_id, limit=1)
         return records[0] if records else None
 
+    def publication_gate_status(self, profile: ReviewProfile | str) -> dict:
+        resolved_profile = self.registry.get_profile(profile) if isinstance(profile, str) else profile
+        latest = self.latest_record(resolved_profile.id)
+        status = {
+            "allowed": False,
+            "reason": "No dry-run record exists for this review profile.",
+            "reason_code": "missing_dry_run",
+            "latest_record": latest.model_dump() if latest else None,
+        }
+        if latest is None:
+            return status
+        if latest.profile_version != resolved_profile.version:
+            status["reason"] = "Latest dry-run belongs to a different profile version."
+            status["reason_code"] = "version_mismatch"
+            return status
+        current_signature = _profile_snapshot_signature(self.registry.freeze_profile(resolved_profile))
+        latest_signature = _profile_snapshot_signature(latest.task_snapshot.get("selected_profile_snapshot", {}))
+        if latest_signature and current_signature != latest_signature:
+            status["reason"] = "Latest dry-run does not match the current profile asset snapshot."
+            status["reason_code"] = "stale_dry_run"
+            return status
+        if _is_before(latest.created_at, resolved_profile.updated_at):
+            status["reason"] = "Latest dry-run is older than the latest profile change."
+            status["reason_code"] = "stale_dry_run"
+            return status
+        status["allowed"] = True
+        status["reason"] = "Latest dry-run is valid for this profile version."
+        status["reason_code"] = "passed"
+        return status
+
+    def assert_profile_can_publish(self, profile: ReviewProfile | str) -> None:
+        status = self.publication_gate_status(profile)
+        if not status["allowed"]:
+            raise ProfileDryRunError(status["reason"])
+
     def run(
         self,
         profile_id: str,
@@ -146,3 +181,41 @@ class ProfileDryRunService:
             warning_count=int(semantic_payload.get("warning_count") or 0),
             task_snapshot=task.model_dump(),
         )
+
+
+def _parse_datetime(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def _is_before(left: str | None, right: str | None) -> bool:
+    left_dt = _parse_datetime(left)
+    right_dt = _parse_datetime(right)
+    if left_dt is None or right_dt is None:
+        return False
+    return left_dt < right_dt
+
+
+def _profile_snapshot_signature(snapshot: dict) -> str:
+    assets = snapshot.get("assets") if isinstance(snapshot, dict) else None
+    if not isinstance(assets, list):
+        return ""
+    normalized = [
+        {
+            "asset_id": item.get("asset_id"),
+            "asset_type": item.get("asset_type"),
+            "version": item.get("version"),
+            "content_hash": item.get("content_hash"),
+        }
+        for item in assets
+        if isinstance(item, dict)
+    ]
+    normalized.sort(key=lambda item: (item.get("asset_type") or "", item.get("asset_id") or ""))
+    return json.dumps(normalized, ensure_ascii=False, sort_keys=True, separators=(",", ":"))

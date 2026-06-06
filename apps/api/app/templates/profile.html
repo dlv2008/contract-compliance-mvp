@@ -151,12 +151,26 @@
             <button class="button-primary" type="submit">绑定资产</button>
         </form>
         <div class="panel-spacer"></div>
+        {% set gate = data.dry_run_gate %}
+        <div class="dry-run-gate {% if gate.allowed %}is-ok{% else %}is-blocked{% endif %}">
+            <div>
+                <strong>发布门禁</strong>
+                <p>
+                    {% if gate.allowed %}
+                    最近一次 dry-run 已覆盖当前配置集版本，可以发布。
+                    {% else %}
+                    发布前必须先完成当前配置集版本的 dry-run。
+                    {% endif %}
+                </p>
+            </div>
+            <span>{{ gate.reason_code }}</span>
+        </div>
         <form class="upload-form" action="/review-profiles/{{ data.profile.id }}/publish" method="post">
             <label class="form-row">
                 <span>发布说明</span>
                 <textarea class="input textarea" name="comment" rows="3" placeholder="确认必需资产完整，样本测试通过。"></textarea>
             </label>
-            <button class="button-primary" type="submit">发布配置集版本</button>
+            <button class="button-primary" type="submit" {% if not gate.allowed %}disabled{% endif %}>发布配置集版本</button>
         </form>
         {% endif %}
 

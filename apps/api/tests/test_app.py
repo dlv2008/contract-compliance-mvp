@@ -37,6 +37,27 @@ def sample_contract(filename: str) -> Path:
     return sample_dir / filename
 
 
+def dry_run_profile_for_publish(
+    client: TestClient,
+    profile_id: str,
+    contract_text: str | None = None,
+) -> dict:
+    if contract_text is None:
+        sample_dir = next(path for path in (REPO_ROOT / "resource").iterdir() if path.name.startswith("01_"))
+        sample_path = sorted(path for path in sample_dir.iterdir() if "B-" in path.name)[-1]
+        contract_text = sample_path.read_text(encoding="utf-8")
+    response = client.post(
+        f"/api/review-profiles/{profile_id}/dry-run",
+        json={
+            "contract_name": "publish gate dry-run",
+            "source_filename": "publish-gate.txt",
+            "source_text": contract_text,
+        },
+    )
+    assert response.status_code == 201
+    return response.json()["dry_run"]
+
+
 def test_health_endpoint(client: TestClient) -> None:
     response = client.get("/api/health")
 
@@ -442,6 +463,39 @@ def test_profile_page_runs_dry_run_and_displays_result(client: TestClient) -> No
     assert "profile page dry-run sample" in page_response.text
 
 
+def test_publish_profile_requires_latest_dry_run(client: TestClient) -> None:
+    clone_response = client.post(
+        "/api/review-profiles/profile-procurement-basic-v1/versions",
+        json={"name": "Profile without dry-run"},
+    )
+    profile = clone_response.json()["profile"]
+
+    publish_response = client.post(f"/api/review-profiles/{profile['id']}/publish", json={})
+
+    assert publish_response.status_code == 400
+    assert "dry-run" in publish_response.json()["detail"]
+
+
+def test_publish_profile_rejects_stale_dry_run_after_binding_change(client: TestClient) -> None:
+    clone_response = client.post(
+        "/api/review-profiles/profile-procurement-basic-v1/versions",
+        json={"name": "Profile stale dry-run"},
+    )
+    profile = clone_response.json()["profile"]
+    dry_run_profile_for_publish(client, profile["id"])
+
+    bind_response = client.post(
+        f"/api/review-profiles/{profile['id']}/assets",
+        json={"asset_id": "asset-prompt-field-extraction-v1", "binding_reason": "change after dry-run"},
+    )
+    assert bind_response.status_code == 200
+
+    publish_response = client.post(f"/api/review-profiles/{profile['id']}/publish", json={})
+
+    assert publish_response.status_code == 400
+    assert "snapshot" in publish_response.json()["detail"]
+
+
 def test_asset_draft_editor_updates_and_validates_hard_rule(client: TestClient) -> None:
     draft_response = client.post(
         "/api/rule-drafts/generate",
@@ -556,6 +610,7 @@ def test_clause_parse_template_fallback_is_visible_in_workflow(client: TestClien
         json={"asset_id": active_template["id"], "binding_reason": "fallback parser test"},
     )
     assert bind_response.status_code == 200
+    dry_run_profile_for_publish(client, profile["id"])
     publish_profile_response = client.post(f"/api/review-profiles/{profile['id']}/publish", json={})
     assert publish_profile_response.status_code == 200
     active_profile = publish_profile_response.json()["profile"]
@@ -625,6 +680,7 @@ def test_extraction_schema_controls_displayed_fields(client: TestClient) -> None
         json={"asset_id": active_schema["id"], "binding_reason": "display selected fields only"},
     )
     assert bind_response.status_code == 200
+    dry_run_profile_for_publish(client, draft_profile["id"])
     publish_profile_response = client.post(f"/api/review-profiles/{draft_profile['id']}/publish", json={})
     active_profile = publish_profile_response.json()["profile"]
 
@@ -710,6 +766,7 @@ def test_extraction_rule_adds_configured_fact(client: TestClient) -> None:
             ).status_code
             == 200
         )
+    dry_run_profile_for_publish(client, draft_profile["id"])
     active_profile = client.post(f"/api/review-profiles/{draft_profile['id']}/publish", json={}).json()["profile"]
 
     contract_text = """
@@ -772,6 +829,7 @@ def test_llm_field_extraction_fallback_marks_candidate_field(client: TestClient)
             ).status_code
             == 200
         )
+    dry_run_profile_for_publish(client, draft_profile["id"])
     active_profile = client.post(f"/api/review-profiles/{draft_profile['id']}/publish", json={}).json()["profile"]
 
     contract_text = """
@@ -883,6 +941,7 @@ def test_hard_rule_condition_tree_asset_affects_review(client: TestClient) -> No
         json={"asset_id": active_rule["id"], "binding_reason": "dsl hard rule test"},
     )
     assert bind_response.status_code == 200
+    dry_run_profile_for_publish(client, draft_profile["id"])
     active_profile = client.post(f"/api/review-profiles/{draft_profile['id']}/publish", json={}).json()["profile"]
 
     contract_text = """
@@ -1117,6 +1176,7 @@ def test_asset_management_closes_profile_usage_loop(client: TestClient) -> None:
     assert bind_response.status_code == 200
     assert bind_response.json()["asset_counts"]["hard_rule"] == 7
 
+    dry_run_profile_for_publish(client, draft_profile["id"])
     profile_publish_response = client.post(
         f"/api/review-profiles/{draft_profile['id']}/publish",
         json={"comment": "ready for upload"},
