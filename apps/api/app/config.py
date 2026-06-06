@@ -119,6 +119,8 @@ class Settings:
     report_dir: Path
     task_store_path: Path
     task_store_backend: str
+    asset_store_backend: str
+    workflow_store_backend: str
     database_url: str | None
     sample_contract_dir: Path
     env_file_path: str | None
@@ -151,6 +153,8 @@ def get_settings() -> Settings:
     report_dir = Path(_first_setting("CONTRACT_COMPLIANCE_REPORT_DIR", "REPORT_DIR", default=str(data_dir / "reports")))
     task_store_path = Path(_first_setting("CONTRACT_COMPLIANCE_TASK_STORE", default=str(data_dir / "tasks.json")))
     task_store_backend = _first_setting("CONTRACT_COMPLIANCE_TASK_STORE_BACKEND", "TASK_STORE_BACKEND", default="json").strip().lower()
+    asset_store_backend = _first_setting("CONTRACT_COMPLIANCE_ASSET_STORE", "ASSET_STORE_BACKEND", default="json").strip().lower()
+    workflow_store_backend = _first_setting("CONTRACT_COMPLIANCE_WORKFLOW_STORE", "WORKFLOW_STORE_BACKEND", default="json").strip().lower()
     database_url = _normalize_database_url(
         _first_setting("CONTRACT_COMPLIANCE_DATABASE_URL", "DATABASE_URL")
     )
@@ -196,6 +200,8 @@ def get_settings() -> Settings:
         report_dir=report_dir,
         task_store_path=task_store_path,
         task_store_backend=task_store_backend,
+        asset_store_backend=asset_store_backend,
+        workflow_store_backend=workflow_store_backend,
         database_url=database_url,
         sample_contract_dir=sample_contract_dir,
         env_file_path=env_file_path,

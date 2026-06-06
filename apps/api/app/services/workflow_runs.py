@@ -48,7 +48,14 @@ class JsonWorkflowRunStore:
 class WorkflowRunRepository:
     def __init__(self, settings: Settings | None = None, store: WorkflowRunStore | None = None) -> None:
         self.settings = settings or get_settings()
-        self.store = store or JsonWorkflowRunStore(self.settings.data_dir / "workflow_runs.json")
+        self.store = store or self._default_store()
+
+    def _default_store(self) -> WorkflowRunStore:
+        if self.settings.workflow_store_backend == "postgres":
+            from app.services.db_store import PostgresWorkflowRunStore
+
+            return PostgresWorkflowRunStore(self.settings)
+        return JsonWorkflowRunStore(self.settings.data_dir / "workflow_runs.json")
 
     def list_runs(self, task_id: str | None = None, *, limit: int = 50) -> list[WorkflowRunRecord]:
         runs = self.store.load_runs()

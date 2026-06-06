@@ -59,6 +59,10 @@ def _asset_workbench_data(
         ],
         "profiles": [profile.model_dump() for profile in profiles],
         "summary": registry.summary(),
+        "storage": {
+            "backend": registry.settings.asset_store_backend,
+            "database_configured": bool(registry.settings.database_url),
+        },
         "execution_audit": registry.asset_execution_audit(),
         "asset_types": registry.asset_types(),
         "selected_asset_type": asset_type or "",

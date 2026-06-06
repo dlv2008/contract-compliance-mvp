@@ -145,6 +145,10 @@ def list_assets(asset_type: str | None = None, status: str | None = None, q: str
             for asset in assets
         ],
         "total": len(assets),
+        "storage": {
+            "backend": registry.settings.asset_store_backend,
+            "database_configured": bool(registry.settings.database_url),
+        },
     }
 
 

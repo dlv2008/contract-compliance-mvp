@@ -810,14 +810,33 @@ class AssetRegistry:
         llm_client: LLMClient | None = None,
     ) -> None:
         self.settings = settings or get_settings()
-        self.store = store or JsonAssetStore(self.settings.data_dir / "assets.json")
-        self.source_store = source_store or JsonAssetSourceDocumentStore(
-            self.settings.data_dir / "asset_source_documents.json"
-        )
-        self.llm_execution_store = llm_execution_store or JsonLLMExecutionStore(
-            self.settings.data_dir / "llm_executions.json"
-        )
+        if store is None or source_store is None or llm_execution_store is None:
+            default_store, default_source_store, default_llm_store = self._default_stores()
+        else:
+            default_store, default_source_store, default_llm_store = store, source_store, llm_execution_store
+        self.store = store or default_store
+        self.source_store = source_store or default_source_store
+        self.llm_execution_store = llm_execution_store or default_llm_store
         self.llm_client = llm_client or LLMClient(self.settings)
+
+    def _default_stores(self) -> tuple[AssetStore, AssetSourceDocumentStore, LLMExecutionStore]:
+        if self.settings.asset_store_backend == "postgres":
+            from app.services.db_store import (
+                PostgresAssetSourceDocumentStore,
+                PostgresAssetStore,
+                PostgresLLMExecutionStore,
+            )
+
+            return (
+                PostgresAssetStore(self.settings),
+                PostgresAssetSourceDocumentStore(self.settings),
+                PostgresLLMExecutionStore(self.settings),
+            )
+        return (
+            JsonAssetStore(self.settings.data_dir / "assets.json"),
+            JsonAssetSourceDocumentStore(self.settings.data_dir / "asset_source_documents.json"),
+            JsonLLMExecutionStore(self.settings.data_dir / "llm_executions.json"),
+        )
 
     def list_source_documents(self, *, q: str | None = None) -> list[AssetSourceDocument]:
         documents = self.source_store.load_documents()

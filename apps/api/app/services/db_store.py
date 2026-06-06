@@ -4,7 +4,16 @@ from datetime import datetime, timezone
 from urllib.parse import urlsplit, urlunsplit
 
 from app.config import Settings, get_settings
-from app.models import DatabaseProbe, TaskRecord
+from app.models import (
+    AssetSourceDocument,
+    ConfigAsset,
+    DatabaseProbe,
+    LLMExecutionRecord,
+    ReviewProfile,
+    StepRunRecord,
+    TaskRecord,
+    WorkflowRunRecord,
+)
 
 
 SCHEMA_SQL = """
@@ -35,6 +44,7 @@ CREATE TABLE IF NOT EXISTS config_asset (
     schema_version TEXT NOT NULL DEFAULT 'asset-v1',
     created_by TEXT NOT NULL DEFAULT 'system',
     approved_by TEXT,
+    payload JSONB NOT NULL DEFAULT '{}'::jsonb,
     effective_from TIMESTAMPTZ,
     effective_to TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -51,6 +61,7 @@ CREATE TABLE IF NOT EXISTS review_profile (
     status TEXT NOT NULL DEFAULT 'draft',
     applicability JSONB NOT NULL DEFAULT '{}'::jsonb,
     description TEXT,
+    payload JSONB NOT NULL DEFAULT '{}'::jsonb,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -80,8 +91,65 @@ CREATE TABLE IF NOT EXISTS llm_execution (
     status TEXT NOT NULL,
     confidence DOUBLE PRECISION,
     latency_ms DOUBLE PRECISION,
+    error_detail TEXT,
+    payload JSONB NOT NULL DEFAULT '{}'::jsonb,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+CREATE TABLE IF NOT EXISTS asset_source_document (
+    id TEXT PRIMARY KEY,
+    source_type TEXT NOT NULL DEFAULT 'policy_document',
+    name TEXT NOT NULL,
+    content_hash TEXT NOT NULL,
+    payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_by TEXT NOT NULL DEFAULT 'reviewer',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_asset_source_document_hash ON asset_source_document (content_hash);
+
+CREATE TABLE IF NOT EXISTS workflow_run (
+    id TEXT PRIMARY KEY,
+    task_id TEXT NOT NULL,
+    run_type TEXT NOT NULL DEFAULT 'contract_review',
+    status TEXT NOT NULL,
+    source TEXT NOT NULL DEFAULT 'analyze_contract',
+    input_hash TEXT,
+    started_at TIMESTAMPTZ NOT NULL,
+    finished_at TIMESTAMPTZ,
+    updated_at TIMESTAMPTZ,
+    retry_count INTEGER NOT NULL DEFAULT 0,
+    error TEXT,
+    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+    payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_workflow_run_task_id ON workflow_run (task_id, started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_workflow_run_status ON workflow_run (status);
+
+CREATE TABLE IF NOT EXISTS workflow_step_run (
+    id TEXT PRIMARY KEY,
+    workflow_run_id TEXT NOT NULL REFERENCES workflow_run(id) ON DELETE CASCADE,
+    task_id TEXT NOT NULL,
+    step_key TEXT NOT NULL,
+    label TEXT NOT NULL,
+    status TEXT NOT NULL,
+    input_hash TEXT,
+    output_summary TEXT,
+    error TEXT,
+    retry_count INTEGER NOT NULL DEFAULT 0,
+    started_at TIMESTAMPTZ,
+    finished_at TIMESTAMPTZ,
+    updated_at TIMESTAMPTZ,
+    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+    payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_workflow_step_run_task_id ON workflow_step_run (task_id, step_key);
+CREATE INDEX IF NOT EXISTS idx_workflow_step_run_workflow ON workflow_step_run (workflow_run_id);
 
 CREATE TABLE IF NOT EXISTS audit_event (
     id BIGSERIAL PRIMARY KEY,
@@ -211,6 +279,20 @@ ALTER TABLE report_snapshot ADD COLUMN IF NOT EXISTS report_type TEXT NOT NULL D
 ALTER TABLE report_snapshot ADD COLUMN IF NOT EXISTS generated_by TEXT NOT NULL DEFAULT 'system';
 ALTER TABLE review_task ADD COLUMN IF NOT EXISTS selected_profile_id TEXT;
 ALTER TABLE review_task ADD COLUMN IF NOT EXISTS selected_profile_snapshot JSONB NOT NULL DEFAULT '{}'::jsonb;
+ALTER TABLE config_asset ADD COLUMN IF NOT EXISTS payload JSONB NOT NULL DEFAULT '{}'::jsonb;
+ALTER TABLE config_asset ADD COLUMN IF NOT EXISTS content_hash TEXT;
+ALTER TABLE config_asset ADD COLUMN IF NOT EXISTS description TEXT;
+ALTER TABLE config_asset ADD COLUMN IF NOT EXISTS parent_asset_id TEXT;
+ALTER TABLE config_asset ADD COLUMN IF NOT EXISTS approval_comment TEXT;
+ALTER TABLE config_asset ADD COLUMN IF NOT EXISTS rejection_comment TEXT;
+ALTER TABLE review_profile ADD COLUMN IF NOT EXISTS payload JSONB NOT NULL DEFAULT '{}'::jsonb;
+ALTER TABLE review_profile ADD COLUMN IF NOT EXISTS parent_profile_id TEXT;
+ALTER TABLE review_profile ADD COLUMN IF NOT EXISTS created_by TEXT NOT NULL DEFAULT 'system';
+ALTER TABLE review_profile ADD COLUMN IF NOT EXISTS published_by TEXT;
+ALTER TABLE review_profile ADD COLUMN IF NOT EXISTS publish_comment TEXT;
+ALTER TABLE review_profile_asset ADD COLUMN IF NOT EXISTS binding_reason TEXT;
+ALTER TABLE llm_execution ADD COLUMN IF NOT EXISTS error_detail TEXT;
+ALTER TABLE llm_execution ADD COLUMN IF NOT EXISTS payload JSONB NOT NULL DEFAULT '{}'::jsonb;
 """
 
 
@@ -562,6 +644,347 @@ class PostgresTaskStore:
         for row in cur.fetchall():
             task = TaskRecord.model_validate(row[0])
             self._sync_task_children(cur, task)
+
+
+class PostgresAssetStore:
+    def __init__(self, settings: Settings | None = None) -> None:
+        self.settings = settings or get_settings()
+        if not self.settings.database_url:
+            raise PostgresUnavailableError("未配置 DATABASE_URL。")
+        self.ensure_schema()
+
+    def load_state(self) -> tuple[list[ConfigAsset], list[ReviewProfile]]:
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT payload FROM config_asset ORDER BY asset_type, status, name, version DESC")
+                assets = [ConfigAsset.model_validate(row[0]) for row in cur.fetchall()]
+                cur.execute("SELECT payload FROM review_profile ORDER BY status, name, version DESC")
+                profiles = [ReviewProfile.model_validate(row[0]) for row in cur.fetchall()]
+        return assets, profiles
+
+    def save_state(self, assets: list[ConfigAsset], profiles: list[ReviewProfile]) -> None:
+        from psycopg.types.json import Jsonb
+
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM review_profile_asset")
+                cur.execute("DELETE FROM review_profile")
+                cur.execute("DELETE FROM config_asset")
+                for asset in assets:
+                    cur.execute(
+                        """
+                        INSERT INTO config_asset (
+                            id, asset_type, name, version, status, applicability, content,
+                            schema_version, created_by, approved_by, effective_from, effective_to,
+                            content_hash, description, parent_asset_id, approval_comment,
+                            rejection_comment, created_at, updated_at, payload
+                        )
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        """,
+                        (
+                            asset.id,
+                            asset.asset_type,
+                            asset.name,
+                            asset.version,
+                            asset.status,
+                            Jsonb(asset.applicability),
+                            Jsonb(asset.content),
+                            asset.schema_version,
+                            asset.created_by,
+                            asset.approved_by,
+                            asset.effective_from,
+                            asset.effective_to,
+                            asset.content_hash,
+                            asset.description,
+                            asset.parent_asset_id,
+                            asset.approval_comment,
+                            asset.rejection_comment,
+                            asset.created_at,
+                            asset.updated_at,
+                            Jsonb(asset.model_dump()),
+                        ),
+                    )
+                for profile in profiles:
+                    cur.execute(
+                        """
+                        INSERT INTO review_profile (
+                            id, name, version, status, applicability, description, parent_profile_id,
+                            created_by, published_by, publish_comment, created_at, updated_at, payload
+                        )
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        """,
+                        (
+                            profile.id,
+                            profile.name,
+                            profile.version,
+                            profile.status,
+                            Jsonb(profile.applicability),
+                            profile.description,
+                            profile.parent_profile_id,
+                            profile.created_by,
+                            profile.published_by,
+                            profile.publish_comment,
+                            profile.created_at,
+                            profile.updated_at,
+                            Jsonb(profile.model_dump()),
+                        ),
+                    )
+                    for ref in profile.assets:
+                        cur.execute(
+                            """
+                            INSERT INTO review_profile_asset (
+                                profile_id, asset_id, asset_type, asset_version, required, binding_reason
+                            )
+                            VALUES (%s, %s, %s, %s, %s, %s)
+                            """,
+                            (
+                                profile.id,
+                                ref.asset_id,
+                                ref.asset_type,
+                                ref.asset_version,
+                                ref.required,
+                                ref.binding_reason,
+                            ),
+                        )
+            conn.commit()
+
+    def ensure_schema(self) -> None:
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(SCHEMA_SQL)
+            conn.commit()
+
+    def count_assets(self) -> int:
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT count(*) FROM config_asset")
+                return int(cur.fetchone()[0])
+
+    def count_profiles(self) -> int:
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT count(*) FROM review_profile")
+                return int(cur.fetchone()[0])
+
+    def _connect(self):
+        try:
+            import psycopg
+        except ImportError as exc:
+            raise PostgresUnavailableError("缺少 psycopg 依赖，无法连接 PostgreSQL。") from exc
+        return psycopg.connect(self.settings.database_url, connect_timeout=5)
+
+
+class PostgresAssetSourceDocumentStore:
+    def __init__(self, settings: Settings | None = None) -> None:
+        self.settings = settings or get_settings()
+        if not self.settings.database_url:
+            raise PostgresUnavailableError("未配置 DATABASE_URL。")
+        PostgresAssetStore(self.settings).ensure_schema()
+
+    def load_documents(self) -> list[AssetSourceDocument]:
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT payload FROM asset_source_document ORDER BY created_at DESC")
+                return [AssetSourceDocument.model_validate(row[0]) for row in cur.fetchall()]
+
+    def save_documents(self, documents: list[AssetSourceDocument]) -> None:
+        from psycopg.types.json import Jsonb
+
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM asset_source_document")
+                for document in documents:
+                    cur.execute(
+                        """
+                        INSERT INTO asset_source_document (
+                            id, source_type, name, content_hash, payload, created_by, created_at, updated_at
+                        )
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                        """,
+                        (
+                            document.id,
+                            document.source_type,
+                            document.name,
+                            document.content_hash,
+                            Jsonb(document.model_dump()),
+                            document.created_by,
+                            document.created_at,
+                            document.updated_at,
+                        ),
+                    )
+            conn.commit()
+
+    def _connect(self):
+        try:
+            import psycopg
+        except ImportError as exc:
+            raise PostgresUnavailableError("缺少 psycopg 依赖，无法连接 PostgreSQL。") from exc
+        return psycopg.connect(self.settings.database_url, connect_timeout=5)
+
+
+class PostgresLLMExecutionStore:
+    def __init__(self, settings: Settings | None = None) -> None:
+        self.settings = settings or get_settings()
+        if not self.settings.database_url:
+            raise PostgresUnavailableError("未配置 DATABASE_URL。")
+        PostgresAssetStore(self.settings).ensure_schema()
+
+    def load_executions(self) -> list[LLMExecutionRecord]:
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT payload FROM llm_execution ORDER BY created_at DESC")
+                return [LLMExecutionRecord.model_validate(row[0]) for row in cur.fetchall()]
+
+    def save_executions(self, executions: list[LLMExecutionRecord]) -> None:
+        from psycopg.types.json import Jsonb
+
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM llm_execution WHERE task_id IS NULL")
+                for execution in executions:
+                    cur.execute(
+                        """
+                        INSERT INTO llm_execution (
+                            id, task_id, purpose, asset_id, prompt_template_id, model,
+                            input_payload, output_payload, raw_output_preview, status,
+                            confidence, latency_ms, error_detail, payload, created_at
+                        )
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        ON CONFLICT (id) DO UPDATE SET
+                            output_payload = EXCLUDED.output_payload,
+                            raw_output_preview = EXCLUDED.raw_output_preview,
+                            status = EXCLUDED.status,
+                            confidence = EXCLUDED.confidence,
+                            latency_ms = EXCLUDED.latency_ms,
+                            error_detail = EXCLUDED.error_detail,
+                            payload = EXCLUDED.payload
+                        """,
+                        (
+                            execution.id,
+                            execution.task_id,
+                            execution.purpose,
+                            execution.asset_id,
+                            execution.prompt_template_id,
+                            execution.model,
+                            Jsonb(execution.input_payload),
+                            Jsonb(execution.output_payload),
+                            execution.raw_output_preview,
+                            execution.status,
+                            execution.confidence,
+                            execution.latency_ms,
+                            execution.error_detail,
+                            Jsonb(execution.model_dump()),
+                            execution.created_at,
+                        ),
+                    )
+            conn.commit()
+
+    def _connect(self):
+        try:
+            import psycopg
+        except ImportError as exc:
+            raise PostgresUnavailableError("缺少 psycopg 依赖，无法连接 PostgreSQL。") from exc
+        return psycopg.connect(self.settings.database_url, connect_timeout=5)
+
+
+class PostgresWorkflowRunStore:
+    def __init__(self, settings: Settings | None = None) -> None:
+        self.settings = settings or get_settings()
+        if not self.settings.database_url:
+            raise PostgresUnavailableError("未配置 DATABASE_URL。")
+        self.ensure_schema()
+
+    def load_runs(self) -> list[WorkflowRunRecord]:
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT payload FROM workflow_run ORDER BY started_at DESC")
+                return [WorkflowRunRecord.model_validate(row[0]) for row in cur.fetchall()]
+
+    def save_runs(self, runs: list[WorkflowRunRecord]) -> None:
+        from psycopg.types.json import Jsonb
+
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM workflow_step_run")
+                cur.execute("DELETE FROM workflow_run")
+                for run in runs:
+                    cur.execute(
+                        """
+                        INSERT INTO workflow_run (
+                            id, task_id, run_type, status, source, input_hash, started_at,
+                            finished_at, updated_at, retry_count, error, metadata, payload
+                        )
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        """,
+                        (
+                            run.id,
+                            run.task_id,
+                            run.run_type,
+                            run.status,
+                            run.source,
+                            run.input_hash,
+                            run.started_at,
+                            run.finished_at,
+                            run.updated_at,
+                            run.retry_count,
+                            run.error,
+                            Jsonb(run.metadata),
+                            Jsonb(run.model_dump()),
+                        ),
+                    )
+                    for step in run.step_runs:
+                        self._insert_step_run(cur, step)
+            conn.commit()
+
+    def ensure_schema(self) -> None:
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(SCHEMA_SQL)
+            conn.commit()
+
+    def count_runs(self) -> int:
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT count(*) FROM workflow_run")
+                return int(cur.fetchone()[0])
+
+    def _insert_step_run(self, cur, step: StepRunRecord) -> None:  # noqa: ANN001
+        from psycopg.types.json import Jsonb
+
+        cur.execute(
+            """
+            INSERT INTO workflow_step_run (
+                id, workflow_run_id, task_id, step_key, label, status, input_hash,
+                output_summary, error, retry_count, started_at, finished_at,
+                updated_at, metadata, payload
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """,
+            (
+                step.id,
+                step.workflow_run_id,
+                step.task_id,
+                step.step_key,
+                step.label,
+                step.status,
+                step.input_hash,
+                step.output_summary,
+                step.error,
+                step.retry_count,
+                step.started_at,
+                step.finished_at,
+                step.updated_at,
+                Jsonb(step.metadata),
+                Jsonb(step.model_dump()),
+            ),
+        )
+
+    def _connect(self):
+        try:
+            import psycopg
+        except ImportError as exc:
+            raise PostgresUnavailableError("缺少 psycopg 依赖，无法连接 PostgreSQL。") from exc
+        return psycopg.connect(self.settings.database_url, connect_timeout=5)
 
 
 class DatabaseProbeClient:

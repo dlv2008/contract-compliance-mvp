@@ -13,6 +13,7 @@
         <span>待发布 <strong>{{ data.summary.approved_assets }}</strong></span>
         <span>已接入 <strong>{{ data.summary.execution_audit.get("implemented", 0) }}</strong></span>
         <span>部分接入 <strong>{{ data.summary.execution_audit.get("partially_implemented", 0) }}</strong></span>
+        <span>资产仓储 <strong>{{ data.storage.backend }}</strong></span>
     </div>
 </section>
 
