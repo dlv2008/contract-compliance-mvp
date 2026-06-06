@@ -1349,6 +1349,16 @@ def test_create_task_and_fetch_review_payload(client: TestClient) -> None:
     assert any(item["fact_key"] == "payment.prepay_ratio" for item in facts_response.json()["items"])
     assert any(item["rule_id"] == "FIN-PUR-003" for item in rule_hits_response.json()["items"])
 
+    retry_response = client.post(f"/api/tasks/{task['id']}/workflow-run/steps/parsing/retry")
+    assert retry_response.status_code == 200
+    retry_payload = retry_response.json()
+    parsing_step = next(
+        item for item in retry_payload["workflow_run"]["step_runs"] if item["step_key"] == "parsing"
+    )
+    assert parsing_step["retry_count"] == 1
+    assert retry_payload["workflow_run"]["source"] == "analyze_contract.v1.retry"
+    assert any(event["type"] == "workflow.retry" for event in retry_payload["task"]["trace"])
+
     report_item = reports_response.json()["items"][0]
     assert report_item["file_path"]
     assert Path(report_item["file_path"]).exists()
@@ -1371,6 +1381,9 @@ def test_create_task_and_fetch_review_payload(client: TestClient) -> None:
 
     assert actions_response.json()["items"][0]["action_type"] == "request_evidence"
     assert next(item for item in updated_hits if item["rule_id"] == "FIN-PUR-003")["review_status"] == "evidence_requested"
+
+    blocked_retry_response = client.post(f"/api/tasks/{task['id']}/workflow-run/steps/parsing/retry")
+    assert blocked_retry_response.status_code == 400
 
     updated_reports_response = client.get(f"/api/tasks/{task['id']}/report-snapshots")
     updated_reports = updated_reports_response.json()["items"]

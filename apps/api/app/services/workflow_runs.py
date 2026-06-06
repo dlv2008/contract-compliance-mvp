@@ -60,18 +60,32 @@ class WorkflowRunRepository:
         runs = self.list_runs(task_id, limit=1)
         return runs[0] if runs else None
 
-    def record_from_task(self, task: TaskRecord, *, run_type: str = "contract_review") -> WorkflowRunRecord:
+    def record_from_task(
+        self,
+        task: TaskRecord,
+        *,
+        run_type: str = "contract_review",
+        retry_step_key: str | None = None,
+        previous_run: WorkflowRunRecord | None = None,
+    ) -> WorkflowRunRecord:
         now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        retry_counts = {
+            step.step_key: step.retry_count
+            for step in (previous_run.step_runs if previous_run else [])
+        }
+        if retry_step_key:
+            retry_counts[retry_step_key] = retry_counts.get(retry_step_key, 0) + 1
         run = WorkflowRunRecord(
             id=f"workflow-{task.id}",
             task_id=task.id,
             run_type=run_type,
             status=_workflow_status(task.workflow_steps),
-            source="analyze_contract.v1",
+            source="analyze_contract.v1" if retry_step_key is None else "analyze_contract.v1.retry",
             input_hash=_task_input_hash(task),
             started_at=task.created_at,
             finished_at=now,
             updated_at=now,
+            retry_count=sum(retry_counts.values()),
             step_runs=[
                 _build_step_run(
                     workflow_run_id=f"workflow-{task.id}",
@@ -79,6 +93,7 @@ class WorkflowRunRepository:
                     step=step,
                     index=index,
                     run_type=run_type,
+                    retry_count=retry_counts.get(step.key, 0),
                 )
                 for index, step in enumerate(task.workflow_steps, start=1)
             ],
@@ -87,6 +102,7 @@ class WorkflowRunRepository:
                 "contract_type": task.contract_type,
                 "profile_id": task.selected_profile_id,
                 "profile_name": task.selected_profile_name,
+                "retry_step_key": retry_step_key,
             },
         )
         runs = [item for item in self.store.load_runs() if item.id != run.id]
@@ -131,6 +147,7 @@ def _build_step_run(
     step: WorkflowStep,
     index: int,
     run_type: str,
+    retry_count: int = 0,
 ) -> StepRunRecord:
     status = _step_status(step.status)
     summary = _step_summary(task, step.key)
@@ -144,7 +161,7 @@ def _build_step_run(
         input_hash=_task_input_hash(task),
         output_summary=summary,
         error=_step_error(task, step.key, step.status),
-        retry_count=0,
+        retry_count=retry_count,
         started_at=step.updated_at or task.created_at,
         finished_at=step.updated_at if status in {"succeeded", "failed"} else None,
         updated_at=step.updated_at or task.created_at,

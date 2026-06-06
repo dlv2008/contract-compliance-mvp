@@ -1492,6 +1492,23 @@ button:disabled {
     line-height: 1.45;
 }
 
+.workflow-step .workflow-error {
+    color: #8f2d1f;
+}
+
+.inline-workflow-action {
+    grid-column: 2 / 4;
+    margin: 0;
+}
+
+.inline-workflow-action button {
+    width: auto;
+    min-height: 32px;
+    padding: 7px 12px;
+    border-radius: 6px;
+    font-size: 12px;
+}
+
 .workflow-done {
     border-color: rgba(47, 124, 99, 0.24);
 }

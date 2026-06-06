@@ -258,6 +258,17 @@
                 <strong>{{ step.label }}</strong>
                 <em>{{ step.status }}</em>
                 <small>{{ step.output_summary }}</small>
+                {% if step.error %}
+                <small class="workflow-error">{{ step.error }}</small>
+                {% endif %}
+                {% if step.retry_count %}
+                <small>已重试 {{ step.retry_count }} 次</small>
+                {% endif %}
+                {% if step.can_retry and step.error %}
+                <form class="inline-workflow-action" action="/reviews/{{ data.task.id }}/workflow-run/steps/{{ step.step_key }}/retry" method="post">
+                    <button type="submit">重试</button>
+                </form>
+                {% endif %}
             </div>
             {% endfor %}
             {% else %}

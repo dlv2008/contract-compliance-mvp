@@ -356,6 +356,8 @@ def build_review_payload(
                         "output_summary": step.output_summary,
                         "error": step.error,
                         "retry_count": step.retry_count,
+                        "can_retry": step.step_key in {"parsing", "extracting", "evaluating", "semantic_rules"}
+                        and not task.review_actions,
                         "updated_at": step.updated_at,
                     }
                     for step in workflow_run.step_runs
@@ -1816,7 +1818,14 @@ def active_report_template(rule_context: dict[str, Any] | None) -> dict[str, Any
 
 def rule_context_from_profile_snapshot(snapshot: dict | None) -> dict[str, Any]:
     assets = (snapshot or {}).get("assets") if isinstance(snapshot, dict) else []
-    context: dict[str, list[dict[str, Any]]] = {
+    context: dict[str, Any] = {
+        "hard_rules": [],
+        "clause_parse_templates": [],
+        "extraction_schemas": [],
+        "extraction_rules": [],
+        "prompt_templates": [],
+        "semantic_rules": [],
+        "policy_references": [],
         "risk_message_templates": [],
         "report_templates": [],
         "risk_evaluation_policies": [],
@@ -1840,7 +1849,32 @@ def rule_context_from_profile_snapshot(snapshot: dict | None) -> dict[str, Any]:
             context["report_templates"].append(item)
         if asset_type == "risk_evaluation_policy":
             context["risk_evaluation_policies"].append(item)
+        if asset_type == "hard_rule":
+            context["hard_rules"].append(item)
+            _restore_legacy_threshold_context(context, item)
+        if asset_type == "clause_parse_template":
+            context["clause_parse_templates"].append(item)
+        if asset_type == "extraction_schema":
+            context["extraction_schemas"].append(item)
+        if asset_type == "extraction_rule":
+            context["extraction_rules"].append(item)
+        if asset_type == "prompt_template":
+            context["prompt_templates"].append(item)
+        if asset_type == "semantic_rule":
+            context["semantic_rules"].append(item)
+        if asset_type == "policy_reference":
+            context["policy_references"].append(item)
     return context
+
+
+def _restore_legacy_threshold_context(context: dict[str, Any], hard_rule: dict[str, Any]) -> None:
+    if hard_rule.get("rule_id") != "prepay_ratio_gt_threshold":
+        return
+    condition = hard_rule.get("condition") if isinstance(hard_rule.get("condition"), dict) else {}
+    threshold = condition.get("threshold")
+    if isinstance(threshold, int | float):
+        context["prepay_threshold"] = threshold
+        context["prepay_threshold_asset_id"] = hard_rule.get("asset_id")
 
 
 def derive_decision(overall_risk: str, risks: list[RiskFinding] | None = None) -> str:

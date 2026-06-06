@@ -483,6 +483,30 @@ def get_task_workflow_run(task_id: str) -> dict:
     return {"workflow_run": workflow_run.model_dump()}
 
 
+@router.post("/tasks/{task_id}/workflow-run/steps/{step_key}/retry")
+def retry_task_workflow_step(task_id: str, step_key: str) -> dict:
+    repository = TaskRepository()
+    try:
+        task = repository.retry_workflow_step(task_id, step_key)
+    except ContractUploadError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except TaskStorageError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    workflow_run = WorkflowRunRepository().latest_for_task(task_id)
+    return {
+        "task": build_review_payload(
+            task,
+            RagflowClient().probe(),
+            LLMClient().probe(),
+            DatabaseProbeClient().probe(),
+            ObjectStore().probe(),
+            repository.list_report_snapshots(task_id),
+            workflow_run,
+        ),
+        "workflow_run": workflow_run.model_dump() if workflow_run else None,
+    }
+
+
 @router.get("/tasks/{task_id}/clauses")
 def list_task_clauses(task_id: str) -> dict:
     repository = TaskRepository()

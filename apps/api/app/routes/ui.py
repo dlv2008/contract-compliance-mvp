@@ -538,6 +538,17 @@ def review(task_id: str, request: Request) -> HTMLResponse:
     )
 
 
+@router.post("/reviews/{task_id}/workflow-run/steps/{step_key}/retry")
+def retry_review_workflow_step(task_id: str, step_key: str) -> RedirectResponse:
+    try:
+        TaskRepository().retry_workflow_step(task_id, step_key)
+    except ContractUploadError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except TaskStorageError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return RedirectResponse(url=f"/reviews/{task_id}", status_code=303)
+
+
 @router.post("/reviews/{task_id}/actions")
 def create_review_action(
     task_id: str,

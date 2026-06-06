@@ -50,6 +50,7 @@ TASK_DECISION_BY_ACTION = {
     "require_revision": "revision_required",
     "archive": "archived",
 }
+RETRYABLE_WORKFLOW_STEP_KEYS = {"parsing", "extracting", "evaluating", "semantic_rules"}
 
 
 class ContractUploadError(ValueError):
@@ -358,6 +359,59 @@ class TaskRepository:
         if task.report_snapshot and task.report_snapshot.version == version:
             return render_report_markdown(task, task.report_snapshot)
         raise TaskStorageError("Report file is missing.")
+
+    def retry_workflow_step(self, task_id: str, step_key: str) -> TaskRecord:
+        if step_key not in RETRYABLE_WORKFLOW_STEP_KEYS:
+            raise ContractUploadError("This workflow step cannot be retried from the review workbench.")
+        task = self.get_task(task_id)
+        if task is None:
+            raise ContractUploadError("Task does not exist.")
+        if task.review_actions:
+            raise ContractUploadError("Task already has manual review actions. Re-run is blocked to protect audit results.")
+
+        previous_run = WorkflowRunRepository(self.settings).latest_for_task(task_id)
+        rule_context = rule_context_from_profile_snapshot(task.selected_profile_snapshot)
+        retried_task = analyze_contract(
+            task_id=task.id,
+            source_filename=task.source_filename,
+            contract_name=task.name,
+            contract_text=task.contract_text,
+            created_at=task.created_at,
+            rule_context=rule_context,
+        )
+        now = datetime.now(timezone.utc).isoformat(timespec="microseconds")
+        trace = list(retried_task.agent_trace)
+        trace.append(
+            AgentTraceEvent(
+                at=now,
+                type="workflow.retry",
+                message=f"Workflow step retried: {step_key}",
+                payload={
+                    "step_key": step_key,
+                    "previous_workflow_run_id": previous_run.id if previous_run else None,
+                    "profile_id": task.selected_profile_id,
+                    "profile_snapshot_hash": (task.selected_profile_snapshot or {}).get("snapshot_hash"),
+                },
+            )
+        )
+        retried_task = retried_task.model_copy(
+            update={
+                "selected_profile_id": task.selected_profile_id,
+                "selected_profile_name": task.selected_profile_name,
+                "selected_profile_snapshot": task.selected_profile_snapshot,
+                "stored_file": task.stored_file,
+                "review_actions": task.review_actions,
+                "agent_trace": trace,
+            }
+        )
+        retried_task = self._write_report_snapshot(retried_task)
+        self._persist_task(retried_task, f"retried workflow step {step_key}")
+        WorkflowRunRepository(self.settings).record_from_task(
+            retried_task,
+            retry_step_key=step_key,
+            previous_run=previous_run,
+        )
+        return retried_task
 
     def _bootstrap_if_needed(self) -> None:
         if self._use_postgres():
