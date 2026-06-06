@@ -74,6 +74,8 @@ class WorkflowRunRepository:
         run_type: str = "contract_review",
         retry_step_key: str | None = None,
         previous_run: WorkflowRunRecord | None = None,
+        source: str | None = None,
+        resume_from_step: str | None = None,
     ) -> WorkflowRunRecord:
         now = datetime.now(timezone.utc).isoformat(timespec="seconds")
         retry_counts = {
@@ -87,7 +89,8 @@ class WorkflowRunRepository:
             task_id=task.id,
             run_type=run_type,
             status=_workflow_status(task.workflow_steps),
-            source="analyze_contract.v1" if retry_step_key is None else "analyze_contract.v1.retry",
+            source=source
+            or ("analyze_contract.v2.executor" if retry_step_key is None else "analyze_contract.v2.executor.retry"),
             input_hash=_task_input_hash(task),
             started_at=task.created_at,
             finished_at=now,
@@ -110,6 +113,10 @@ class WorkflowRunRepository:
                 "profile_id": task.selected_profile_id,
                 "profile_name": task.selected_profile_name,
                 "retry_step_key": retry_step_key,
+                "resume_from_step": resume_from_step,
+                "checkpoint_count": len(_checkpoint_payloads(task)),
+                "checkpoints": _checkpoint_payloads(task),
+                "previous_workflow_run_id": previous_run.id if previous_run else None,
             },
         )
         runs = [item for item in self.store.load_runs() if item.id != run.id]
@@ -157,7 +164,9 @@ def _build_step_run(
     retry_count: int = 0,
 ) -> StepRunRecord:
     status = _step_status(step.status)
-    summary = _step_summary(task, step.key)
+    checkpoint = _checkpoint_for_step(task, step.key)
+    summary = checkpoint.get("output_summary") if checkpoint else _step_summary(task, step.key)
+    checkpoint_status = checkpoint.get("status") if checkpoint else None
     return StepRunRecord(
         id=f"{workflow_run_id}-{index:02d}-{step.key}",
         workflow_run_id=workflow_run_id,
@@ -175,7 +184,26 @@ def _build_step_run(
         metadata={
             "legacy_status": step.status,
             "run_type": run_type,
+            "checkpoint_status": checkpoint_status,
+            "checkpoint_saved": bool(checkpoint),
+            "resume_mode": checkpoint.get("resume_mode") if checkpoint else None,
+            "resume_from_step": checkpoint.get("resume_from_step") if checkpoint else None,
         },
+    )
+
+
+def _checkpoint_payloads(task: TaskRecord) -> list[dict]:
+    return [
+        event.payload
+        for event in task.agent_trace
+        if event.type == "workflow.checkpoint" and isinstance(event.payload, dict)
+    ]
+
+
+def _checkpoint_for_step(task: TaskRecord, step_key: str) -> dict:
+    return next(
+        (payload for payload in _checkpoint_payloads(task) if payload.get("step_key") == step_key),
+        {},
     )
 
 

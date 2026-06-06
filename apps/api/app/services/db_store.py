@@ -6,6 +6,8 @@ from urllib.parse import urlsplit, urlunsplit
 from app.config import Settings, get_settings
 from app.models import (
     AssetSourceDocument,
+    AssetAuditEvent,
+    AssetEditLock,
     ConfigAsset,
     DatabaseProbe,
     LLMExecutionRecord,
@@ -108,6 +110,35 @@ CREATE TABLE IF NOT EXISTS asset_source_document (
 );
 
 CREATE INDEX IF NOT EXISTS idx_asset_source_document_hash ON asset_source_document (content_hash);
+
+CREATE TABLE IF NOT EXISTS asset_audit_event (
+    id TEXT PRIMARY KEY,
+    target_type TEXT NOT NULL,
+    target_id TEXT NOT NULL,
+    action TEXT NOT NULL,
+    actor TEXT NOT NULL DEFAULT 'reviewer',
+    message TEXT NOT NULL,
+    before_hash TEXT,
+    after_hash TEXT,
+    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+    payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_asset_audit_event_target ON asset_audit_event (target_type, target_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_asset_audit_event_action ON asset_audit_event (action, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS asset_edit_lock (
+    id TEXT PRIMARY KEY,
+    asset_id TEXT NOT NULL,
+    actor TEXT NOT NULL DEFAULT 'reviewer',
+    purpose TEXT NOT NULL DEFAULT 'edit',
+    acquired_at TIMESTAMPTZ NOT NULL,
+    expires_at TIMESTAMPTZ NOT NULL,
+    payload JSONB NOT NULL DEFAULT '{}'::jsonb
+);
+
+CREATE INDEX IF NOT EXISTS idx_asset_edit_lock_asset ON asset_edit_lock (asset_id, expires_at DESC);
 
 CREATE TABLE IF NOT EXISTS workflow_run (
     id TEXT PRIMARY KEY,
@@ -810,6 +841,105 @@ class PostgresAssetSourceDocumentStore:
                             document.created_by,
                             document.created_at,
                             document.updated_at,
+                        ),
+                    )
+            conn.commit()
+
+    def _connect(self):
+        try:
+            import psycopg
+        except ImportError as exc:
+            raise PostgresUnavailableError("缺少 psycopg 依赖，无法连接 PostgreSQL。") from exc
+        return psycopg.connect(self.settings.database_url, connect_timeout=5)
+
+
+class PostgresAssetAuditStore:
+    def __init__(self, settings: Settings | None = None) -> None:
+        self.settings = settings or get_settings()
+        if not self.settings.database_url:
+            raise PostgresUnavailableError("未配置 DATABASE_URL。")
+        PostgresAssetStore(self.settings).ensure_schema()
+
+    def load_events(self) -> list[AssetAuditEvent]:
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT payload FROM asset_audit_event ORDER BY created_at DESC")
+                return [AssetAuditEvent.model_validate(row[0]) for row in cur.fetchall()]
+
+    def save_events(self, events: list[AssetAuditEvent]) -> None:
+        from psycopg.types.json import Jsonb
+
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM asset_audit_event")
+                for event in events:
+                    cur.execute(
+                        """
+                        INSERT INTO asset_audit_event (
+                            id, target_type, target_id, action, actor, message,
+                            before_hash, after_hash, metadata, payload, created_at
+                        )
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        """,
+                        (
+                            event.id,
+                            event.target_type,
+                            event.target_id,
+                            event.action,
+                            event.actor,
+                            event.message,
+                            event.before_hash,
+                            event.after_hash,
+                            Jsonb(event.metadata),
+                            Jsonb(event.model_dump()),
+                            event.created_at,
+                        ),
+                    )
+            conn.commit()
+
+    def _connect(self):
+        try:
+            import psycopg
+        except ImportError as exc:
+            raise PostgresUnavailableError("缺少 psycopg 依赖，无法连接 PostgreSQL。") from exc
+        return psycopg.connect(self.settings.database_url, connect_timeout=5)
+
+
+class PostgresAssetEditLockStore:
+    def __init__(self, settings: Settings | None = None) -> None:
+        self.settings = settings or get_settings()
+        if not self.settings.database_url:
+            raise PostgresUnavailableError("未配置 DATABASE_URL。")
+        PostgresAssetStore(self.settings).ensure_schema()
+
+    def load_locks(self) -> list[AssetEditLock]:
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT payload FROM asset_edit_lock ORDER BY acquired_at DESC")
+                return [AssetEditLock.model_validate(row[0]) for row in cur.fetchall()]
+
+    def save_locks(self, locks: list[AssetEditLock]) -> None:
+        from psycopg.types.json import Jsonb
+
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM asset_edit_lock")
+                for lock in locks:
+                    cur.execute(
+                        """
+                        INSERT INTO asset_edit_lock (
+                            id, asset_id, actor, purpose, acquired_at, expires_at, payload
+                        )
+                        VALUES (%s, %s, %s, %s, %s, %s, %s)
+                        """,
+                        (
+                            lock.id,
+                            lock.asset_id,
+                            lock.actor,
+                            lock.purpose,
+                            lock.acquired_at,
+                            lock.expires_at,
+                            Jsonb(lock.model_dump()),
                         ),
                     )
             conn.commit()

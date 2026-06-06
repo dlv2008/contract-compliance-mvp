@@ -461,6 +461,98 @@ button:disabled {
     gap: 10px;
 }
 
+.audit-details {
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 12px;
+    background: rgba(255, 255, 255, 0.62);
+}
+
+.audit-details summary {
+    cursor: pointer;
+    font-weight: 800;
+}
+
+.audit-list {
+    display: grid;
+    gap: 10px;
+    margin-top: 12px;
+}
+
+.audit-item {
+    display: grid;
+    gap: 4px;
+    padding: 10px;
+    border-radius: var(--radius-sm);
+    background: rgba(24, 33, 38, 0.05);
+}
+
+.audit-item strong,
+.audit-item span,
+.audit-item small {
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+
+.audit-item span,
+.audit-item small {
+    color: var(--muted);
+    font-size: 12px;
+}
+
+.audit-filter-form {
+    display: grid;
+    grid-template-columns: repeat(5, minmax(120px, 1fr)) auto;
+    gap: 12px;
+    align-items: end;
+}
+
+.audit-filter-form label {
+    display: grid;
+    gap: 6px;
+    color: var(--muted);
+    font-size: 12px;
+}
+
+.audit-filter-form input,
+.audit-filter-form select {
+    width: 100%;
+    min-height: 38px;
+}
+
+.audit-table {
+    display: grid;
+    gap: 8px;
+}
+
+.audit-table-head,
+.audit-table-row {
+    display: grid;
+    grid-template-columns: 170px 170px minmax(220px, 1fr) 110px 110px;
+    gap: 12px;
+    align-items: center;
+}
+
+.audit-table-head {
+    color: var(--muted);
+    font-size: 12px;
+    padding: 0 12px;
+}
+
+.audit-table-row {
+    padding: 12px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    background: #fff;
+}
+
+.audit-table-row p {
+    grid-column: 2 / 6;
+    margin: 0;
+    color: var(--muted);
+    font-size: 13px;
+}
+
 .compact-dl dt {
     color: var(--muted);
 }
@@ -1456,6 +1548,28 @@ button:disabled {
     gap: 10px;
 }
 
+.workflow-run-tools {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 12px;
+    margin-bottom: 12px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: #f8fafc;
+}
+
+.workflow-run-tools div {
+    display: grid;
+    gap: 3px;
+}
+
+.workflow-run-tools small,
+.workflow-checkpoint {
+    color: var(--muted);
+}
+
 .workflow-step,
 .trace-item {
     display: grid;
@@ -1794,7 +1908,10 @@ button:disabled {
     .report-history-list,
     .execution-grid,
     .filter-bar,
-    .config-summary {
+    .config-summary,
+    .audit-filter-form,
+    .audit-table-head,
+    .audit-table-row {
         grid-template-columns: repeat(2, minmax(0, 1fr));
     }
 
@@ -1842,6 +1959,19 @@ button:disabled {
 
     .trace-item {
         grid-template-columns: 1fr;
+    }
+
+    .audit-table-head {
+        display: none;
+    }
+
+    .audit-filter-form,
+    .audit-table-row {
+        grid-template-columns: 1fr;
+    }
+
+    .audit-table-row p {
+        grid-column: 1;
     }
 
     .task-row-top {

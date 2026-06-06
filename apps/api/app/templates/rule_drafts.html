@@ -242,6 +242,7 @@
                 <details class="draft-editor">
                     <summary>编辑草稿内容</summary>
                     <form class="draft-editor-form" action="/assets/{{ asset.id }}/update-draft" method="post">
+                        <input type="hidden" name="expected_content_hash" value="{{ asset.content_hash or '' }}" />
                         <label class="form-row">
                             <span>名称</span>
                             <input class="input" name="name" value="{{ asset.name }}" required />

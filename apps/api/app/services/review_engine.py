@@ -114,6 +114,165 @@ TIMELINE = [
 CLAUSE_HEADER_RE = re.compile(r"^【(?P<id>[A-Z]\d{3})】(?P<title>.+?)\s*$", re.MULTILINE)
 
 
+class ReviewRunExecutor:
+    def __init__(
+        self,
+        *,
+        task_id: str,
+        source_filename: str,
+        contract_name: str | None,
+        contract_text: str,
+        created_at: str | None = None,
+        rule_context: dict[str, Any] | None = None,
+        resume_from_step: str | None = None,
+    ) -> None:
+        self.task_id = task_id
+        self.source_filename = source_filename
+        self.contract_name = contract_name
+        self.normalized_text = contract_text.replace("\r\n", "\n").strip()
+        self.created_at = created_at or datetime.now(timezone.utc).isoformat(timespec="seconds")
+        self.rule_context = rule_context
+        self.resume_from_step = resume_from_step
+        self.checkpoint_events: list[AgentTraceEvent] = []
+
+    def run(self) -> TaskRecord:
+        resolved_name = (
+            self.contract_name
+            or extract_contract_name(self.normalized_text)
+            or Path(self.source_filename).stem
+        ).strip()
+        self._checkpoint("uploaded", "succeeded", f"Source file {self.source_filename} archived.")
+
+        clauses = parse_clauses(self.normalized_text, rule_context=self.rule_context)
+        fallback_used = any(clause.parser_source.startswith("fallback:") for clause in clauses)
+        self._checkpoint(
+            "parsing",
+            "succeeded_with_warnings" if fallback_used else "succeeded",
+            f"Parsed {len(clauses)} clauses; fallback_used={fallback_used}.",
+            {"clause_count": len(clauses), "fallback_used": fallback_used},
+        )
+
+        contract_type = detect_contract_type(resolved_name, self.normalized_text)
+        facts = extract_facts(resolved_name, contract_type, clauses, self.normalized_text, rule_context=self.rule_context)
+        apply_llm_extraction_fallback(facts, clauses, self.normalized_text, contract_type, rule_context=self.rule_context)
+        candidate_count = sum(1 for fact in facts.values() if fact.get("status") == "candidate")
+        self._checkpoint(
+            "extracting",
+            "succeeded",
+            f"Extracted {len(facts)} facts; llm_candidates={candidate_count}.",
+            {"fact_count": len(facts), "llm_candidate_count": candidate_count},
+        )
+
+        risks = evaluate_rules(contract_type, facts, rule_context=self.rule_context)
+        self._checkpoint(
+            "evaluating",
+            "succeeded",
+            f"Evaluated deterministic rules; risks={len(risks)}.",
+            {"risk_count": len(risks)},
+        )
+
+        semantic_results = evaluate_semantic_rules(
+            contract_type,
+            facts,
+            clauses,
+            self.normalized_text,
+            rule_context=self.rule_context,
+        )
+        semantic_warning_statuses = {"failed", "fallback", "low_confidence", "missing_evidence"}
+        semantic_warning_count = sum(
+            1 for result in semantic_results if result.get("status") in semantic_warning_statuses
+        )
+        self._checkpoint(
+            "semantic_rules",
+            "succeeded_with_warnings" if semantic_warning_count else "succeeded",
+            f"Semantic rules completed; warnings={semantic_warning_count}.",
+            {"semantic_rule_count": len(semantic_results), "warning_count": semantic_warning_count},
+        )
+
+        for result in semantic_results:
+            semantic_risk = result.get("risk")
+            if isinstance(semantic_risk, RiskFinding) and not risk_is_duplicate(semantic_risk, risks):
+                risks.append(semantic_risk)
+        risks = apply_risk_message_templates(risks, rule_context=self.rule_context)
+        risks.sort(key=lambda item: risk_priority(item.level), reverse=True)
+        clauses = apply_clause_status(clauses, risks)
+        extracted_fields = build_extracted_fields(contract_type, facts, rule_context=self.rule_context)
+        overall_risk = derive_overall_risk(risks, rule_context=self.rule_context)
+        status = derive_status(overall_risk, rule_context=self.rule_context)
+        decision = derive_decision(overall_risk)
+        self._checkpoint(
+            "review",
+            "waiting_human" if status == "pending_review" else "succeeded",
+            f"Routed to task status {status}.",
+            {"status": status, "overall_risk": overall_risk, "decision": decision},
+        )
+
+        report_snapshot = build_report_snapshot(resolved_name, risks, decision, rule_context=self.rule_context)
+        self._checkpoint(
+            "report",
+            "succeeded",
+            f"Generated report snapshot v{report_snapshot.version}.",
+            {"report_version": report_snapshot.version, "section_count": len(report_snapshot.sections)},
+        )
+        workflow_steps = build_workflow_steps(self.created_at, status, clauses=clauses, semantic_results=semantic_results)
+        agent_trace = self.checkpoint_events + build_agent_trace(
+            self.created_at,
+            contract_type,
+            clauses,
+            extracted_fields,
+            risks,
+            status,
+            semantic_results=semantic_results,
+        )
+        return TaskRecord(
+            id=self.task_id,
+            name=resolved_name,
+            contract_type=contract_type,
+            contract_type_label=CONTRACT_TYPE_LABELS[contract_type],
+            source_filename=self.source_filename,
+            status=status,
+            status_label=STATUS_LABELS[status],
+            overall_risk=overall_risk,
+            overall_risk_label=OVERALL_RISK_LABELS[overall_risk],
+            decision=decision,
+            decision_label=DECISION_LABELS[decision],
+            summary=build_summary(risks),
+            created_at=self.created_at,
+            contract_text=self.normalized_text,
+            clauses=clauses,
+            extracted_fields=extracted_fields,
+            risks=risks,
+            workflow_steps=workflow_steps,
+            agent_trace=agent_trace,
+            report_snapshot=report_snapshot,
+        )
+
+    def _checkpoint(
+        self,
+        step_key: str,
+        status: str,
+        output_summary: str,
+        extra_payload: dict[str, Any] | None = None,
+    ) -> None:
+        payload = {
+            "step_key": step_key,
+            "status": status,
+            "output_summary": output_summary,
+            "resume_mode": "checkpoint",
+            "resume_from_step": self.resume_from_step,
+        }
+        if extra_payload:
+            payload.update(extra_payload)
+        self.checkpoint_events.append(
+            AgentTraceEvent(
+                at=self.created_at,
+                type="workflow.checkpoint",
+                message=f"Checkpoint saved for {step_key}.",
+                payload=payload,
+            )
+        )
+
+
 def analyze_contract(
     task_id: str,
     source_filename: str,
@@ -121,66 +280,17 @@ def analyze_contract(
     contract_text: str,
     created_at: str | None = None,
     rule_context: dict[str, Any] | None = None,
+    resume_from_step: str | None = None,
 ) -> TaskRecord:
-    normalized_text = contract_text.replace("\r\n", "\n").strip()
-    resolved_name = (contract_name or extract_contract_name(normalized_text) or Path(source_filename).stem).strip()
-    clauses = parse_clauses(normalized_text, rule_context=rule_context)
-    contract_type = detect_contract_type(resolved_name, normalized_text)
-    facts = extract_facts(resolved_name, contract_type, clauses, normalized_text, rule_context=rule_context)
-    risks = evaluate_rules(contract_type, facts, rule_context=rule_context)
-    apply_llm_extraction_fallback(facts, clauses, normalized_text, contract_type, rule_context=rule_context)
-    semantic_results = evaluate_semantic_rules(
-        contract_type,
-        facts,
-        clauses,
-        normalized_text,
-        rule_context=rule_context,
-    )
-    for result in semantic_results:
-        semantic_risk = result.get("risk")
-        if isinstance(semantic_risk, RiskFinding) and not risk_is_duplicate(semantic_risk, risks):
-            risks.append(semantic_risk)
-    risks = apply_risk_message_templates(risks, rule_context=rule_context)
-    risks.sort(key=lambda item: risk_priority(item.level), reverse=True)
-    clauses = apply_clause_status(clauses, risks)
-    extracted_fields = build_extracted_fields(contract_type, facts, rule_context=rule_context)
-    overall_risk = derive_overall_risk(risks, rule_context=rule_context)
-    status = derive_status(overall_risk, rule_context=rule_context)
-    decision = derive_decision(overall_risk)
-    created_at = created_at or datetime.now(timezone.utc).isoformat(timespec="seconds")
-    workflow_steps = build_workflow_steps(created_at, status, clauses=clauses, semantic_results=semantic_results)
-    agent_trace = build_agent_trace(
-        created_at,
-        contract_type,
-        clauses,
-        extracted_fields,
-        risks,
-        status,
-        semantic_results=semantic_results,
-    )
-    report_snapshot = build_report_snapshot(resolved_name, risks, decision, rule_context=rule_context)
-    return TaskRecord(
-        id=task_id,
-        name=resolved_name,
-        contract_type=contract_type,
-        contract_type_label=CONTRACT_TYPE_LABELS[contract_type],
+    return ReviewRunExecutor(
+        task_id=task_id,
         source_filename=source_filename,
-        status=status,
-        status_label=STATUS_LABELS[status],
-        overall_risk=overall_risk,
-        overall_risk_label=OVERALL_RISK_LABELS[overall_risk],
-        decision=decision,
-        decision_label=DECISION_LABELS[decision],
-        summary=build_summary(risks),
+        contract_name=contract_name,
+        contract_text=contract_text,
         created_at=created_at,
-        contract_text=normalized_text,
-        clauses=clauses,
-        extracted_fields=extracted_fields,
-        risks=risks,
-        workflow_steps=workflow_steps,
-        agent_trace=agent_trace,
-        report_snapshot=report_snapshot,
-    )
+        rule_context=rule_context,
+        resume_from_step=resume_from_step,
+    ).run()
 
 
 def build_dashboard_payload(
@@ -346,6 +456,10 @@ def build_review_payload(
                 "input_hash": workflow_run.input_hash,
                 "started_at": workflow_run.started_at,
                 "finished_at": workflow_run.finished_at,
+                "retry_count": workflow_run.retry_count,
+                "resume_from_step": workflow_run.metadata.get("resume_from_step"),
+                "checkpoint_count": workflow_run.metadata.get("checkpoint_count", 0),
+                "can_resume": not task.review_actions,
                 "step_runs": [
                     {
                         "id": step.id,
@@ -358,6 +472,10 @@ def build_review_payload(
                         "retry_count": step.retry_count,
                         "can_retry": step.step_key in {"parsing", "extracting", "evaluating", "semantic_rules"}
                         and not task.review_actions,
+                        "checkpoint_saved": bool(step.metadata.get("checkpoint_saved")),
+                        "checkpoint_status": step.metadata.get("checkpoint_status"),
+                        "resume_mode": step.metadata.get("resume_mode"),
+                        "resume_from_step": step.metadata.get("resume_from_step"),
                         "updated_at": step.updated_at,
                     }
                     for step in workflow_run.step_runs

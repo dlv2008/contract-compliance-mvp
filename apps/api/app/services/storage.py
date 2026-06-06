@@ -413,6 +413,60 @@ class TaskRepository:
         )
         return retried_task
 
+    def resume_workflow_run(self, task_id: str, resume_from_step: str | None = None) -> TaskRecord:
+        task = self.get_task(task_id)
+        if task is None:
+            raise ContractUploadError("Task does not exist.")
+        if task.review_actions:
+            raise ContractUploadError("Task already has manual review actions. Resume is blocked to protect audit results.")
+
+        previous_run = WorkflowRunRepository(self.settings).latest_for_task(task_id)
+        requested_step = resume_from_step or _first_resume_step(previous_run)
+        rule_context = rule_context_from_profile_snapshot(task.selected_profile_snapshot)
+        resumed_task = analyze_contract(
+            task_id=task.id,
+            source_filename=task.source_filename,
+            contract_name=task.name,
+            contract_text=task.contract_text,
+            created_at=task.created_at,
+            rule_context=rule_context,
+            resume_from_step=requested_step,
+        )
+        now = datetime.now(timezone.utc).isoformat(timespec="microseconds")
+        trace = list(resumed_task.agent_trace)
+        trace.append(
+            AgentTraceEvent(
+                at=now,
+                type="workflow.resume",
+                message=f"Workflow resumed from {requested_step or 'beginning'}.",
+                payload={
+                    "resume_from_step": requested_step,
+                    "previous_workflow_run_id": previous_run.id if previous_run else None,
+                    "profile_id": task.selected_profile_id,
+                    "profile_snapshot_hash": (task.selected_profile_snapshot or {}).get("snapshot_hash"),
+                },
+            )
+        )
+        resumed_task = resumed_task.model_copy(
+            update={
+                "selected_profile_id": task.selected_profile_id,
+                "selected_profile_name": task.selected_profile_name,
+                "selected_profile_snapshot": task.selected_profile_snapshot,
+                "stored_file": task.stored_file,
+                "review_actions": task.review_actions,
+                "agent_trace": trace,
+            }
+        )
+        resumed_task = self._write_report_snapshot(resumed_task)
+        self._persist_task(resumed_task, f"resumed workflow from {requested_step or 'beginning'}")
+        WorkflowRunRepository(self.settings).record_from_task(
+            resumed_task,
+            previous_run=previous_run,
+            source="analyze_contract.v2.executor.resume",
+            resume_from_step=requested_step,
+        )
+        return resumed_task
+
     def _bootstrap_if_needed(self) -> None:
         if self._use_postgres():
             store = self._postgres_store()
@@ -749,6 +803,15 @@ def overall_risk_label(overall_risk: str) -> str:
 
 def decision_label(decision: str) -> str:
     return DECISION_LABELS.get(decision, decision)
+
+
+def _first_resume_step(workflow_run) -> str | None:
+    if workflow_run is None:
+        return None
+    for step in workflow_run.step_runs:
+        if step.status in {"failed", "waiting_human"}:
+            return step.step_key
+    return next((step.step_key for step in workflow_run.step_runs if not step.metadata.get("checkpoint_saved")), None)
 
 
 def build_review_summary(active_risks: list) -> str:

@@ -49,6 +49,8 @@ def _asset_workbench_data(
     registry = AssetRegistry()
     assets = registry.list_assets(asset_type=asset_type or None, status=status or None, q=q or None)
     profiles = registry.list_profiles(status=None)
+    audit_events = registry.list_audit_events(limit=12)
+    edit_locks = registry.list_edit_locks()
     return {
         "assets": [
             {
@@ -58,6 +60,8 @@ def _asset_workbench_data(
             for asset in assets
         ],
         "profiles": [profile.model_dump() for profile in profiles],
+        "audit_events": [event.model_dump() for event in audit_events],
+        "edit_locks": [lock.model_dump() for lock in edit_locks],
         "summary": registry.summary(),
         "storage": {
             "backend": registry.settings.asset_store_backend,
@@ -69,6 +73,40 @@ def _asset_workbench_data(
         "selected_status": status or "",
         "query": q or "",
         "error": error,
+    }
+
+
+def _asset_audit_data(
+    *,
+    target_type: str | None = None,
+    target_id: str | None = None,
+    action: str | None = None,
+    actor: str | None = None,
+    limit: int = 100,
+) -> dict:
+    registry = AssetRegistry()
+    resolved_limit = max(1, min(limit, 200))
+    events = registry.list_audit_events(
+        target_type=target_type or None,
+        target_id=target_id or None,
+        action=action or None,
+        limit=500,
+    )
+    if actor:
+        events = [event for event in events if event.actor == actor]
+    events = events[:resolved_limit]
+    return {
+        "events": [event.model_dump() for event in events],
+        "total": len(events),
+        "filters": {
+            "target_type": target_type or "",
+            "target_id": target_id or "",
+            "action": action or "",
+            "actor": actor or "",
+            "limit": resolved_limit,
+        },
+        "summary": registry.summary(),
+        "edit_locks": [lock.model_dump() for lock in registry.list_edit_locks()],
     }
 
 
@@ -179,6 +217,31 @@ def assets_workbench(
         {
             "page_title": "审查配置资产",
             "data": _asset_workbench_data(asset_type=asset_type, status=status, q=q, error=error),
+        },
+    )
+
+
+@router.get("/asset-audit", response_class=HTMLResponse)
+def asset_audit(
+    request: Request,
+    target_type: str | None = None,
+    target_id: str | None = None,
+    action: str | None = None,
+    actor: str | None = None,
+    limit: int = 100,
+) -> HTMLResponse:
+    return templates.TemplateResponse(
+        request,
+        "asset_audit.html",
+        {
+            "page_title": "资产操作审计",
+            "data": _asset_audit_data(
+                target_type=target_type,
+                target_id=target_id,
+                action=action,
+                actor=actor,
+                limit=limit,
+            ),
         },
     )
 
@@ -381,6 +444,7 @@ def update_asset_draft_form(
     description: str | None = Form(default=None),
     applicability_json: str = Form(...),
     content_json: str = Form(...),
+    expected_content_hash: str | None = Form(default=None),
 ) -> RedirectResponse:
     try:
         applicability = json.loads(applicability_json)
@@ -399,6 +463,7 @@ def update_asset_draft_form(
             applicability=applicability,
             content=content,
             schema_version=schema_version,
+            expected_content_hash=expected_content_hash,
         )
     except (AssetNotFoundError, AssetStateError) as exc:
         return _redirect_with_asset_error("/rule-drafts", exc)
@@ -546,6 +611,20 @@ def review(task_id: str, request: Request) -> HTMLResponse:
 def retry_review_workflow_step(task_id: str, step_key: str) -> RedirectResponse:
     try:
         TaskRepository().retry_workflow_step(task_id, step_key)
+    except ContractUploadError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except TaskStorageError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return RedirectResponse(url=f"/reviews/{task_id}", status_code=303)
+
+
+@router.post("/reviews/{task_id}/workflow-run/resume")
+def resume_review_workflow_run(
+    task_id: str,
+    resume_from_step: str | None = Form(default=None),
+) -> RedirectResponse:
+    try:
+        TaskRepository().resume_workflow_run(task_id, resume_from_step=resume_from_step or None)
     except ContractUploadError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except TaskStorageError as exc:

@@ -93,6 +93,103 @@ def test_asset_registry_uses_injected_json_store(tmp_path: Path) -> None:
     assert reloaded.content_hash == draft.content_hash
 
 
+def test_asset_audit_events_and_optimistic_lock(client: TestClient) -> None:
+    create_response = client.post(
+        "/api/assets",
+        json={
+            "asset_type": "risk_message_template",
+            "name": "Audit lock template",
+            "content": {"template": "hello {rule_title}"},
+            "actor": "tester",
+        },
+    )
+    assert create_response.status_code == 201
+    draft = create_response.json()["asset"]
+
+    stale_hash = draft["content_hash"]
+    update_response = client.patch(
+        f"/api/assets/{draft['id']}",
+        json={
+            "content": {"template": "updated {rule_title}"},
+            "expected_content_hash": stale_hash,
+            "actor": "tester",
+        },
+    )
+    assert update_response.status_code == 200
+
+    stale_update_response = client.patch(
+        f"/api/assets/{draft['id']}",
+        json={
+            "content": {"template": "stale {rule_title}"},
+            "expected_content_hash": stale_hash,
+            "actor": "tester",
+        },
+    )
+    assert stale_update_response.status_code == 400
+
+    audit_response = client.get(f"/api/asset-audit-events?target_id={draft['id']}")
+    assert audit_response.status_code == 200
+    actions = [item["action"] for item in audit_response.json()["items"]]
+    assert "asset.create_draft" in actions
+    assert "asset.update_draft" in actions
+
+    lock_response = client.post(
+        f"/api/assets/{draft['id']}/edit-lock",
+        json={"actor": "tester", "purpose": "manual_edit", "ttl_minutes": 5},
+    )
+    assert lock_response.status_code == 201
+    lock = lock_response.json()["lock"]
+    assert lock["asset_id"] == draft["id"]
+    assert lock["actor"] == "tester"
+
+    conflicting_lock_response = client.post(
+        f"/api/assets/{draft['id']}/edit-lock",
+        json={"actor": "other-reviewer", "purpose": "manual_edit", "ttl_minutes": 5},
+    )
+    assert conflicting_lock_response.status_code == 400
+
+    locked_update_response = client.patch(
+        f"/api/assets/{draft['id']}",
+        json={
+            "content": {"template": "blocked {rule_title}"},
+            "actor": "other-reviewer",
+        },
+    )
+    assert locked_update_response.status_code == 400
+
+    locked_approve_response = client.post(
+        f"/api/assets/{draft['id']}/approve",
+        json={"actor": "other-reviewer", "comment": "try approve"},
+    )
+    assert locked_approve_response.status_code == 400
+
+    same_actor_update_response = client.patch(
+        f"/api/assets/{draft['id']}",
+        json={
+            "content": {"template": "same actor {rule_title}"},
+            "actor": "tester",
+        },
+    )
+    assert same_actor_update_response.status_code == 200
+
+    locks_response = client.get(f"/api/asset-edit-locks?asset_id={draft['id']}")
+    assert locks_response.status_code == 200
+    assert locks_response.json()["total"] == 1
+
+    audit_page_response = client.get(f"/asset-audit?target_id={draft['id']}")
+    assert audit_page_response.status_code == 200
+    assert "资产操作审计" in audit_page_response.text
+    assert "asset.update_draft" in audit_page_response.text
+
+    release_response = client.delete(f"/api/assets/{draft['id']}/edit-lock?actor=tester")
+    assert release_response.status_code == 204
+    assert client.get(f"/api/asset-edit-locks?asset_id={draft['id']}").json()["total"] == 0
+
+    lock_audit_response = client.get(f"/api/asset-audit-events?target_id={draft['id']}")
+    lock_actions = [item["action"] for item in lock_audit_response.json()["items"]]
+    assert "asset.lock_acquire" in lock_actions
+
+
 def test_asset_source_document_api_saves_and_splits_policy_text(client: TestClient) -> None:
     source_text = """
 第一条 预付款比例
@@ -1330,7 +1427,10 @@ def test_create_task_and_fetch_review_payload(client: TestClient) -> None:
     assert review_task["profile"]["hard_rule_count"] >= 1
     assert len(review_task["workflow_steps"]) >= 5
     assert review_task["workflow_run"]["status"] in {"succeeded", "waiting_human", "succeeded_with_warnings"}
+    assert review_task["workflow_run"]["source"] == "analyze_contract.v2.executor"
+    assert review_task["workflow_run"]["checkpoint_count"] >= 5
     assert len(review_task["workflow_run"]["step_runs"]) >= 5
+    assert all(step["checkpoint_saved"] for step in review_task["workflow_run"]["step_runs"])
     assert any(event["type"] == "rule.evaluate" for event in review_task["trace"])
     assert review_task["report"]["summary"]
 
@@ -1356,8 +1456,16 @@ def test_create_task_and_fetch_review_payload(client: TestClient) -> None:
         item for item in retry_payload["workflow_run"]["step_runs"] if item["step_key"] == "parsing"
     )
     assert parsing_step["retry_count"] == 1
-    assert retry_payload["workflow_run"]["source"] == "analyze_contract.v1.retry"
+    assert parsing_step["metadata"]["checkpoint_saved"] is True
+    assert retry_payload["workflow_run"]["source"] == "analyze_contract.v2.executor.retry"
     assert any(event["type"] == "workflow.retry" for event in retry_payload["task"]["trace"])
+
+    resume_response = client.post(f"/api/tasks/{task['id']}/workflow-run/resume")
+    assert resume_response.status_code == 200
+    resume_payload = resume_response.json()
+    assert resume_payload["workflow_run"]["source"] == "analyze_contract.v2.executor.resume"
+    assert resume_payload["workflow_run"]["metadata"]["checkpoint_count"] >= 5
+    assert any(event["type"] == "workflow.resume" for event in resume_payload["task"]["trace"])
 
     report_item = reports_response.json()["items"][0]
     assert report_item["file_path"]
@@ -1374,6 +1482,8 @@ def test_create_task_and_fetch_review_payload(client: TestClient) -> None:
         },
     )
     assert review_action_response.status_code == 201
+    blocked_resume_response = client.post(f"/api/tasks/{task['id']}/workflow-run/resume")
+    assert blocked_resume_response.status_code == 400
 
     actions_response = client.get(f"/api/tasks/{task['id']}/review-actions")
     updated_hits_response = client.get(f"/api/tasks/{task['id']}/rule-hits")

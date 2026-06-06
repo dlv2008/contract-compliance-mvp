@@ -53,6 +53,12 @@ class AssetReviewRequest(BaseModel):
     comment: str | None = None
 
 
+class AssetEditLockRequest(BaseModel):
+    actor: str = "reviewer"
+    purpose: str = "edit"
+    ttl_minutes: int = 30
+
+
 class CloneAssetRequest(BaseModel):
     name: str | None = None
     description: str | None = None
@@ -65,6 +71,8 @@ class UpdateAssetDraftRequest(BaseModel):
     applicability: dict | None = None
     content: dict | None = None
     schema_version: str | None = None
+    expected_content_hash: str | None = None
+    actor: str = "reviewer"
 
 
 class CreateSourceDocumentRequest(BaseModel):
@@ -259,9 +267,9 @@ def clone_asset(asset_id: str, payload: CloneAssetRequest) -> JSONResponse:
 
 
 @router.delete("/assets/{asset_id}", status_code=204)
-def delete_asset(asset_id: str) -> None:
+def delete_asset(asset_id: str, actor: str = "reviewer") -> None:
     try:
-        AssetRegistry().delete_asset(asset_id)
+        AssetRegistry().delete_asset(asset_id, actor=actor)
     except AssetNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except AssetStateError as exc:
@@ -278,12 +286,62 @@ def update_asset_draft(asset_id: str, payload: UpdateAssetDraftRequest) -> dict:
             applicability=payload.applicability,
             content=payload.content,
             schema_version=payload.schema_version,
+            expected_content_hash=payload.expected_content_hash,
+            actor=payload.actor,
         )
     except AssetNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except AssetStateError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"asset": asset.model_dump()}
+
+
+@router.get("/asset-audit-events")
+def list_asset_audit_events(
+    target_type: str | None = None,
+    target_id: str | None = None,
+    action: str | None = None,
+    actor: str | None = None,
+    limit: int = 50,
+) -> dict:
+    events = [
+        event
+        for event in AssetRegistry().list_audit_events(
+            target_type=target_type,
+            target_id=target_id,
+            action=action,
+            limit=max(1, min(limit, 500)),
+        )
+        if actor is None or event.actor == actor
+    ][: max(1, min(limit, 200))]
+    return {"items": [event.model_dump() for event in events], "total": len(events)}
+
+
+@router.get("/asset-edit-locks")
+def list_asset_edit_locks(asset_id: str | None = None) -> dict:
+    locks = AssetRegistry().list_edit_locks(asset_id=asset_id)
+    return {"items": [lock.model_dump() for lock in locks], "total": len(locks)}
+
+
+@router.post("/assets/{asset_id}/edit-lock", status_code=201)
+def acquire_asset_edit_lock(asset_id: str, payload: AssetEditLockRequest) -> dict:
+    try:
+        lock = AssetRegistry().acquire_edit_lock(
+            asset_id,
+            actor=payload.actor,
+            purpose=payload.purpose,
+            ttl_minutes=payload.ttl_minutes,
+        )
+    except AssetNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except AssetStateError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"lock": lock.model_dump()}
+
+
+@router.delete("/assets/{asset_id}/edit-lock", status_code=204)
+def release_asset_edit_lock(asset_id: str, actor: str = "reviewer") -> None:
+    AssetRegistry().release_edit_lock(asset_id, actor=actor)
 
 
 @router.post("/assets/{asset_id}/approve")
@@ -492,6 +550,30 @@ def retry_task_workflow_step(task_id: str, step_key: str) -> dict:
     repository = TaskRepository()
     try:
         task = repository.retry_workflow_step(task_id, step_key)
+    except ContractUploadError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except TaskStorageError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    workflow_run = WorkflowRunRepository().latest_for_task(task_id)
+    return {
+        "task": build_review_payload(
+            task,
+            RagflowClient().probe(),
+            LLMClient().probe(),
+            DatabaseProbeClient().probe(),
+            ObjectStore().probe(),
+            repository.list_report_snapshots(task_id),
+            workflow_run,
+        ),
+        "workflow_run": workflow_run.model_dump() if workflow_run else None,
+    }
+
+
+@router.post("/tasks/{task_id}/workflow-run/resume")
+def resume_task_workflow_run(task_id: str, resume_from_step: str | None = None) -> dict:
+    repository = TaskRepository()
+    try:
+        task = repository.resume_workflow_run(task_id, resume_from_step=resume_from_step)
     except ContractUploadError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except TaskStorageError as exc:

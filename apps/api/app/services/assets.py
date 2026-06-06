@@ -4,7 +4,7 @@ import hashlib
 import json
 import re
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -12,6 +12,8 @@ from pydantic import ValidationError
 
 from app.config import Settings, get_settings
 from app.models import (
+    AssetAuditEvent,
+    AssetEditLock,
     AssetSourceChunk,
     AssetSourceDocument,
     ConfigAsset,
@@ -214,6 +216,64 @@ class JsonLLMExecutionStore:
         self.state_path.parent.mkdir(parents=True, exist_ok=True)
         temp_path = self.state_path.with_suffix(".tmp")
         payload = {"executions": [execution.model_dump() for execution in executions]}
+        temp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        temp_path.replace(self.state_path)
+
+
+class AssetAuditStore(Protocol):
+    def load_events(self) -> list[AssetAuditEvent]:
+        pass
+
+    def save_events(self, events: list[AssetAuditEvent]) -> None:
+        pass
+
+
+class JsonAssetAuditStore:
+    def __init__(self, state_path: Path) -> None:
+        self.state_path = state_path
+
+    def load_events(self) -> list[AssetAuditEvent]:
+        if not self.state_path.exists():
+            self.save_events([])
+        try:
+            payload = json.loads(self.state_path.read_text(encoding="utf-8"))
+            return [AssetAuditEvent.model_validate(item) for item in payload.get("events", [])]
+        except (OSError, json.JSONDecodeError, ValidationError) as exc:
+            raise AssetStateError("资产审计事件仓库无法读取。") from exc
+
+    def save_events(self, events: list[AssetAuditEvent]) -> None:
+        self.state_path.parent.mkdir(parents=True, exist_ok=True)
+        temp_path = self.state_path.with_suffix(".tmp")
+        payload = {"events": [event.model_dump() for event in events]}
+        temp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        temp_path.replace(self.state_path)
+
+
+class AssetEditLockStore(Protocol):
+    def load_locks(self) -> list[AssetEditLock]:
+        pass
+
+    def save_locks(self, locks: list[AssetEditLock]) -> None:
+        pass
+
+
+class JsonAssetEditLockStore:
+    def __init__(self, state_path: Path) -> None:
+        self.state_path = state_path
+
+    def load_locks(self) -> list[AssetEditLock]:
+        if not self.state_path.exists():
+            self.save_locks([])
+        try:
+            payload = json.loads(self.state_path.read_text(encoding="utf-8"))
+            return [AssetEditLock.model_validate(item) for item in payload.get("locks", [])]
+        except (OSError, json.JSONDecodeError, ValidationError) as exc:
+            raise AssetStateError("资产编辑锁仓库无法读取。") from exc
+
+    def save_locks(self, locks: list[AssetEditLock]) -> None:
+        self.state_path.parent.mkdir(parents=True, exist_ok=True)
+        temp_path = self.state_path.with_suffix(".tmp")
+        payload = {"locks": [lock.model_dump() for lock in locks]}
         temp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         temp_path.replace(self.state_path)
 
@@ -807,21 +867,41 @@ class AssetRegistry:
         store: AssetStore | None = None,
         source_store: AssetSourceDocumentStore | None = None,
         llm_execution_store: LLMExecutionStore | None = None,
+        audit_store: AssetAuditStore | None = None,
+        edit_lock_store: AssetEditLockStore | None = None,
         llm_client: LLMClient | None = None,
     ) -> None:
         self.settings = settings or get_settings()
-        if store is None or source_store is None or llm_execution_store is None:
-            default_store, default_source_store, default_llm_store = self._default_stores()
+        if (
+            store is None
+            or source_store is None
+            or llm_execution_store is None
+            or audit_store is None
+            or edit_lock_store is None
+        ):
+            default_store, default_source_store, default_llm_store, default_audit_store, default_lock_store = self._default_stores()
         else:
-            default_store, default_source_store, default_llm_store = store, source_store, llm_execution_store
+            default_store, default_source_store, default_llm_store, default_audit_store, default_lock_store = (
+                store,
+                source_store,
+                llm_execution_store,
+                audit_store,
+                edit_lock_store,
+            )
         self.store = store or default_store
         self.source_store = source_store or default_source_store
         self.llm_execution_store = llm_execution_store or default_llm_store
+        self.audit_store = audit_store or default_audit_store
+        self.edit_lock_store = edit_lock_store or default_lock_store
         self.llm_client = llm_client or LLMClient(self.settings)
 
-    def _default_stores(self) -> tuple[AssetStore, AssetSourceDocumentStore, LLMExecutionStore]:
+    def _default_stores(
+        self,
+    ) -> tuple[AssetStore, AssetSourceDocumentStore, LLMExecutionStore, AssetAuditStore, AssetEditLockStore]:
         if self.settings.asset_store_backend == "postgres":
             from app.services.db_store import (
+                PostgresAssetAuditStore,
+                PostgresAssetEditLockStore,
                 PostgresAssetSourceDocumentStore,
                 PostgresAssetStore,
                 PostgresLLMExecutionStore,
@@ -831,11 +911,15 @@ class AssetRegistry:
                 PostgresAssetStore(self.settings),
                 PostgresAssetSourceDocumentStore(self.settings),
                 PostgresLLMExecutionStore(self.settings),
+                PostgresAssetAuditStore(self.settings),
+                PostgresAssetEditLockStore(self.settings),
             )
         return (
             JsonAssetStore(self.settings.data_dir / "assets.json"),
             JsonAssetSourceDocumentStore(self.settings.data_dir / "asset_source_documents.json"),
             JsonLLMExecutionStore(self.settings.data_dir / "llm_executions.json"),
+            JsonAssetAuditStore(self.settings.data_dir / "asset_audit_events.json"),
+            JsonAssetEditLockStore(self.settings.data_dir / "asset_edit_locks.json"),
         )
 
     def list_source_documents(self, *, q: str | None = None) -> list[AssetSourceDocument]:
@@ -914,14 +998,24 @@ class AssetRegistry:
             executions = [item for item in executions if item.purpose == purpose]
         return sorted(executions, key=lambda item: item.created_at, reverse=True)
 
-    def delete_asset(self, asset_id: str) -> None:
+    def delete_asset(self, asset_id: str, *, actor: str = "reviewer") -> None:
         assets, profiles = self._load_state()
         asset = next((item for item in assets if item.id == asset_id), None)
         if asset is None:
             raise AssetNotFoundError("配置资产不存在。")
+        self._ensure_asset_write_allowed(asset_id, actor=actor)
         if asset.status not in {"draft", "rejected"}:
             raise AssetStateError("只能删除 draft 或 rejected 状态的资产。approved/active 资产请走驳回、发布或版本化流程。")
         self._save_state([item for item in assets if item.id != asset_id], profiles)
+        self._record_audit_event(
+            target_type="asset",
+            target_id=asset.id,
+            action="asset.delete",
+            actor=actor or "reviewer",
+            message=f"Deleted asset draft {asset.name}.",
+            before_hash=asset.content_hash,
+            metadata={"asset_type": asset.asset_type, "status": asset.status},
+        )
 
     def update_asset_draft(
         self,
@@ -932,13 +1026,19 @@ class AssetRegistry:
         applicability: dict | None = None,
         content: dict | None = None,
         schema_version: str | None = None,
+        expected_content_hash: str | None = None,
+        actor: str = "reviewer",
     ) -> ConfigAsset:
         assets, profiles = self._load_state()
         asset = next((item for item in assets if item.id == asset_id), None)
         if asset is None:
             raise AssetNotFoundError("配置资产不存在。")
+        self._ensure_asset_write_allowed(asset_id, actor=actor)
         if asset.status != "draft":
             raise AssetStateError("只能编辑 draft 状态的资产。")
+
+        if expected_content_hash and asset.content_hash and expected_content_hash != asset.content_hash:
+            raise AssetStateError("资产草稿已被其他操作更新，请刷新页面后再编辑。")
 
         resolved_applicability = applicability if applicability is not None else dict(asset.applicability)
         resolved_content = content if content is not None else dict(asset.content)
@@ -961,7 +1061,118 @@ class AssetRegistry:
         )
         self.validate_asset_draft(candidate)
         self._save_state([candidate if item.id == asset_id else item for item in assets], profiles)
+        self._record_audit_event(
+            target_type="asset",
+            target_id=asset_id,
+            action="asset.update_draft",
+            actor=actor or "reviewer",
+            message=f"Updated asset draft {candidate.name}.",
+            before_hash=asset.content_hash,
+            after_hash=candidate.content_hash,
+            metadata={"asset_type": candidate.asset_type, "schema_version": candidate.schema_version},
+        )
         return candidate
+
+    def list_audit_events(
+        self,
+        *,
+        target_type: str | None = None,
+        target_id: str | None = None,
+        action: str | None = None,
+        limit: int = 50,
+    ) -> list[AssetAuditEvent]:
+        events = self.audit_store.load_events()
+        if target_type:
+            events = [item for item in events if item.target_type == target_type]
+        if target_id:
+            events = [item for item in events if item.target_id == target_id]
+        if action:
+            events = [item for item in events if item.action == action]
+        return sorted(events, key=lambda item: item.created_at, reverse=True)[:limit]
+
+    def list_edit_locks(self, *, asset_id: str | None = None) -> list[AssetEditLock]:
+        locks = self._active_edit_locks()
+        if asset_id:
+            locks = [item for item in locks if item.asset_id == asset_id]
+        return sorted(locks, key=lambda item: item.acquired_at, reverse=True)
+
+    def acquire_edit_lock(
+        self,
+        asset_id: str,
+        *,
+        actor: str = "reviewer",
+        purpose: str = "edit",
+        ttl_minutes: int = 30,
+    ) -> AssetEditLock:
+        self.get_asset(asset_id)
+        actor = actor or "reviewer"
+        active_locks = self._active_edit_locks()
+        conflicting = next((item for item in active_locks if item.asset_id == asset_id and item.actor != actor), None)
+        if conflicting:
+            raise AssetStateError(f"资产已由 {conflicting.actor} 锁定编辑，请等待释放或过期后再操作。")
+        locks = [item for item in active_locks if item.asset_id != asset_id or item.actor == actor]
+        existing = next((item for item in locks if item.asset_id == asset_id and item.actor == actor), None)
+        now = datetime.now(timezone.utc)
+        expires_at = now + timedelta(minutes=max(1, min(ttl_minutes, 240)))
+        lock = AssetEditLock(
+            id=existing.id if existing else f"asset-lock-{uuid.uuid4().hex[:10]}",
+            asset_id=asset_id,
+            actor=actor,
+            purpose=purpose or "edit",
+            acquired_at=existing.acquired_at if existing else now.isoformat(timespec="seconds"),
+            expires_at=expires_at.isoformat(timespec="seconds"),
+        )
+        locks = [lock if item.id == lock.id else item for item in locks]
+        if existing is None:
+            locks.append(lock)
+        self.edit_lock_store.save_locks(locks)
+        self._record_audit_event(
+            target_type="asset",
+            target_id=asset_id,
+            action="asset.lock_acquire",
+            actor=actor,
+            message=f"Acquired edit lock for asset {asset_id}.",
+            metadata={"lock_id": lock.id, "expires_at": lock.expires_at, "purpose": lock.purpose},
+        )
+        return lock
+
+    def release_edit_lock(self, asset_id: str, *, actor: str = "reviewer") -> None:
+        before = self._active_edit_locks()
+        after = [item for item in before if not (item.asset_id == asset_id and item.actor == (actor or "reviewer"))]
+        self.edit_lock_store.save_locks(after)
+        if len(after) != len(before):
+            self._record_audit_event(
+                target_type="asset",
+                target_id=asset_id,
+                action="asset.lock_release",
+                actor=actor or "reviewer",
+                message=f"Released edit lock for asset {asset_id}.",
+            )
+
+    def _active_edit_locks(self) -> list[AssetEditLock]:
+        now = datetime.now(timezone.utc)
+        active = []
+        for lock in self.edit_lock_store.load_locks():
+            try:
+                expires_at = datetime.fromisoformat(lock.expires_at)
+            except ValueError:
+                continue
+            if expires_at > now:
+                active.append(lock)
+        if len(active) != len(self.edit_lock_store.load_locks()):
+            self.edit_lock_store.save_locks(active)
+        return active
+
+    def _ensure_asset_write_allowed(self, asset_id: str, *, actor: str = "reviewer") -> None:
+        resolved_actor = actor or "reviewer"
+        conflicting = next(
+            (item for item in self._active_edit_locks() if item.asset_id == asset_id and item.actor != resolved_actor),
+            None,
+        )
+        if conflicting:
+            raise AssetStateError(
+                f"资产已由 {conflicting.actor} 锁定编辑，当前操作不能覆盖他人正在处理的版本。"
+            )
 
     def validate_asset_draft(self, asset: ConfigAsset) -> list[str]:
         errors: list[str] = []
@@ -1085,6 +1296,15 @@ class AssetRegistry:
         )
         assets.append(draft)
         self._save_state(assets, profiles)
+        self._record_audit_event(
+            target_type="asset",
+            target_id=draft.id,
+            action="asset.create_draft",
+            actor=actor or "reviewer",
+            message=f"Created asset draft {draft.name}.",
+            after_hash=draft.content_hash,
+            metadata={"asset_type": draft.asset_type, "version": draft.version},
+        )
         return draft
 
     def generate_rule_drafts(
@@ -1681,6 +1901,7 @@ class AssetRegistry:
         return execution
 
     def approve_asset(self, asset_id: str, *, actor: str = "reviewer", comment: str | None = None) -> ConfigAsset:
+        self._ensure_asset_write_allowed(asset_id, actor=actor)
         self.validate_asset_draft(self.get_asset(asset_id))
         return self._transition_asset(
             asset_id,
@@ -1691,6 +1912,7 @@ class AssetRegistry:
         )
 
     def reject_asset(self, asset_id: str, *, actor: str = "reviewer", comment: str | None = None) -> ConfigAsset:
+        self._ensure_asset_write_allowed(asset_id, actor=actor)
         return self._transition_asset(
             asset_id,
             expected={"draft", "approved"},
@@ -1700,6 +1922,7 @@ class AssetRegistry:
         )
 
     def publish_asset(self, asset_id: str, *, actor: str = "reviewer") -> ConfigAsset:
+        self._ensure_asset_write_allowed(asset_id, actor=actor)
         return self._transition_asset(
             asset_id,
             expected={"approved"},
@@ -1720,6 +1943,7 @@ class AssetRegistry:
         source = next((item for item in assets if item.id == asset_id), None)
         if source is None:
             raise AssetNotFoundError("配置资产不存在。")
+        self._ensure_asset_write_allowed(asset_id, actor=actor)
         version = max(source.version + 1, self._next_asset_version(assets, source.name, source.applicability))
         now = utc_now()
         draft_id = self._next_asset_id(source, version, assets)
@@ -1741,6 +1965,16 @@ class AssetRegistry:
         )
         assets.append(draft)
         self._save_state(assets, profiles)
+        self._record_audit_event(
+            target_type="asset",
+            target_id=draft.id,
+            action="asset.clone",
+            actor=actor or "reviewer",
+            message=f"Cloned asset {source.id} to draft {draft.id}.",
+            before_hash=source.content_hash,
+            after_hash=draft.content_hash,
+            metadata={"source_asset_id": source.id, "version": draft.version},
+        )
         return draft
 
     def clone_profile(
@@ -1775,6 +2009,14 @@ class AssetRegistry:
             clone = clone.model_copy(update={"id": f"profile-{uuid.uuid4().hex[:10]}"})
         profiles.append(clone)
         self._save_state(assets, profiles)
+        self._record_audit_event(
+            target_type="profile",
+            target_id=clone.id,
+            action="profile.clone",
+            actor=actor or "reviewer",
+            message=f"Cloned profile {source.id} to draft {clone.id}.",
+            metadata={"source_profile_id": source.id, "version": clone.version},
+        )
         return clone
 
     def bind_asset_to_profile(
@@ -1819,6 +2061,15 @@ class AssetRegistry:
         updated = profile.model_copy(update={"assets": refs, "updated_at": utc_now()})
         profiles = [updated if item.id == profile_id else item for item in profiles]
         self._save_state(assets, profiles)
+        self._record_audit_event(
+            target_type="profile",
+            target_id=profile_id,
+            action="profile.bind_asset",
+            actor="reviewer",
+            message=f"Bound asset {asset.id} to profile {profile.id}.",
+            after_hash=asset.content_hash,
+            metadata={"asset_id": asset.id, "asset_type": asset.asset_type, "asset_version": asset.version},
+        )
         return updated
 
     def publish_profile(
@@ -1845,6 +2096,14 @@ class AssetRegistry:
         )
         profiles = [updated if item.id == profile_id else item for item in profiles]
         self._save_state(assets, profiles)
+        self._record_audit_event(
+            target_type="profile",
+            target_id=profile_id,
+            action="profile.publish",
+            actor=actor or "reviewer",
+            message=f"Published profile {profile.name}.",
+            metadata={"version": profile.version, "asset_count": len(profile.assets)},
+        )
         return updated
 
     def freeze_profile(self, profile: ReviewProfile) -> dict:
@@ -2129,6 +2388,16 @@ class AssetRegistry:
         updated = asset.model_copy(update=updates)
         assets = [updated if item.id == asset_id else item for item in assets]
         self._save_state(assets, profiles)
+        self._record_audit_event(
+            target_type="asset",
+            target_id=asset_id,
+            action=f"asset.{status}",
+            actor=actor or "reviewer",
+            message=f"Asset {asset.name} transitioned from {asset.status} to {status}.",
+            before_hash=asset.content_hash,
+            after_hash=updated.content_hash,
+            metadata={"from_status": asset.status, "to_status": status, "asset_type": asset.asset_type},
+        )
         return updated
 
     def _validate_profile_assets(self, profile: ReviewProfile, assets: list[ConfigAsset]) -> None:
@@ -2155,6 +2424,35 @@ class AssetRegistry:
 
     def _save_state(self, assets: list[ConfigAsset], profiles: list[ReviewProfile]) -> None:
         self.store.save_state(assets, profiles)
+
+    def _record_audit_event(
+        self,
+        *,
+        target_type: str,
+        target_id: str,
+        action: str,
+        actor: str,
+        message: str,
+        before_hash: str | None = None,
+        after_hash: str | None = None,
+        metadata: dict | None = None,
+    ) -> AssetAuditEvent:
+        event = AssetAuditEvent(
+            id=f"audit-{uuid.uuid4().hex[:12]}",
+            target_type=target_type,
+            target_id=target_id,
+            action=action,
+            actor=actor or "reviewer",
+            message=message,
+            before_hash=before_hash,
+            after_hash=after_hash,
+            metadata=metadata or {},
+            created_at=utc_now(),
+        )
+        events = self.audit_store.load_events()
+        events.append(event)
+        self.audit_store.save_events(sorted(events, key=lambda item: item.created_at, reverse=True)[:1000])
+        return event
 
     def _ensure_asset_content_hashes(self, assets: list[ConfigAsset]) -> tuple[list[ConfigAsset], bool]:
         changed = False

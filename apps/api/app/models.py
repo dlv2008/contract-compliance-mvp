@@ -235,6 +235,28 @@ class ReviewProfile(BaseModel):
     updated_at: str | None = None
 
 
+class AssetAuditEvent(BaseModel):
+    id: str
+    target_type: str
+    target_id: str
+    action: str
+    actor: str = "reviewer"
+    message: str
+    before_hash: str | None = None
+    after_hash: str | None = None
+    metadata: dict = Field(default_factory=dict)
+    created_at: str
+
+
+class AssetEditLock(BaseModel):
+    id: str
+    asset_id: str
+    actor: str = "reviewer"
+    purpose: str = "edit"
+    acquired_at: str
+    expires_at: str
+
+
 class TaskRecord(BaseModel):
     id: str
     name: str

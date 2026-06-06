@@ -250,6 +250,27 @@
             <span class="state-outline">{{ data.workflow_run.status }} · {{ data.workflow_run.source }}</span>
             {% endif %}
         </div>
+        {% if data.workflow_run %}
+        <div class="workflow-run-tools">
+            <div>
+                <strong>Checkpoint {{ data.workflow_run.checkpoint_count }}</strong>
+                <small>
+                    {% if data.workflow_run.resume_from_step %}
+                    上次恢复从 {{ data.workflow_run.resume_from_step }} 开始
+                    {% else %}
+                    已记录可追溯执行检查点
+                    {% endif %}
+                </small>
+            </div>
+            {% if data.workflow_run.can_resume %}
+            <form class="inline-workflow-action" action="/reviews/{{ data.task.id }}/workflow-run/resume" method="post">
+                <button type="submit">恢复执行</button>
+            </form>
+            {% else %}
+            <small>已有人工复核动作，恢复执行已锁定。</small>
+            {% endif %}
+        </div>
+        {% endif %}
         <div class="workflow-list">
             {% if data.workflow_run %}
             {% for step in data.workflow_run.step_runs %}
@@ -258,6 +279,9 @@
                 <strong>{{ step.label }}</strong>
                 <em>{{ step.status }}</em>
                 <small>{{ step.output_summary }}</small>
+                {% if step.checkpoint_saved %}
+                <small class="workflow-checkpoint">checkpoint: {{ step.checkpoint_status or "saved" }}</small>
+                {% endif %}
                 {% if step.error %}
                 <small class="workflow-error">{{ step.error }}</small>
                 {% endif %}

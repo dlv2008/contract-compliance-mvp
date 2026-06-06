@@ -189,6 +189,37 @@
             </a>
             {% endfor %}
         </div>
+        <div class="panel-spacer"></div>
+        <details class="audit-details" open>
+            <summary>活跃编辑锁</summary>
+            <div class="audit-list">
+                {% for lock in data.edit_locks %}
+                <div class="audit-item">
+                    <strong>{{ lock.asset_id }}</strong>
+                    <span>{{ lock.actor }} · {{ lock.purpose }}</span>
+                    <small>expires {{ lock.expires_at }}</small>
+                </div>
+                {% else %}
+                <p class="panel-note">当前没有活跃编辑锁。</p>
+                {% endfor %}
+            </div>
+        </details>
+
+        <details class="audit-details" open>
+            <summary>最近操作审计</summary>
+            <p class="panel-note"><a href="/asset-audit">查看完整审计检索</a></p>
+            <div class="audit-list">
+                {% for event in data.audit_events %}
+                <div class="audit-item">
+                    <strong>{{ event.action }}</strong>
+                    <span>{{ event.target_type }}: {{ event.target_id }}</span>
+                    <small>{{ event.actor }} · {{ event.created_at }}</small>
+                </div>
+                {% else %}
+                <p class="panel-note">暂无资产操作审计事件。</p>
+                {% endfor %}
+            </div>
+        </details>
     </aside>
 </section>
 {% endblock %}

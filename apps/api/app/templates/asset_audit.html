@@ -1,0 +1,104 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="review-header">
+    <div>
+        <p class="eyebrow">asset governance</p>
+        <h2>资产操作审计</h2>
+        <p class="hero-text">查看配置资产、配置集和编辑锁的操作历史，用于追踪规则口径从草稿、审核、发布到绑定的完整变更过程。</p>
+    </div>
+    <div class="review-state">
+        <span class="state-outline">{{ data.total }} 条记录</span>
+        <span class="state-outline">资产 {{ data.summary.total_assets }}</span>
+        <span class="state-outline">配置集 {{ data.summary.total_profiles }}</span>
+    </div>
+</section>
+
+<section class="panel">
+    <div class="panel-head">
+        <div>
+            <h3>检索条件</h3>
+            <p class="panel-subtitle">按对象、动作或操作者过滤审计记录。</p>
+        </div>
+        <span class="state-outline">活跃编辑锁 {{ data.edit_locks | length }}</span>
+    </div>
+    <form class="audit-filter-form" action="/asset-audit" method="get">
+        <label>
+            <span>对象类型</span>
+            <select name="target_type">
+                <option value="" {% if not data.filters.target_type %}selected{% endif %}>全部</option>
+                <option value="asset" {% if data.filters.target_type == "asset" %}selected{% endif %}>asset</option>
+                <option value="profile" {% if data.filters.target_type == "profile" %}selected{% endif %}>profile</option>
+            </select>
+        </label>
+        <label>
+            <span>对象 ID</span>
+            <input name="target_id" value="{{ data.filters.target_id }}" placeholder="asset-* / profile-*" />
+        </label>
+        <label>
+            <span>动作</span>
+            <input name="action" value="{{ data.filters.action }}" placeholder="asset.update_draft" />
+        </label>
+        <label>
+            <span>操作者</span>
+            <input name="actor" value="{{ data.filters.actor }}" placeholder="reviewer" />
+        </label>
+        <label>
+            <span>数量</span>
+            <input name="limit" type="number" min="1" max="200" value="{{ data.filters.limit }}" />
+        </label>
+        <button type="submit">检索</button>
+    </form>
+</section>
+
+<section class="panel">
+    <div class="panel-head">
+        <h3>审计记录</h3>
+        <a class="state-outline" href="/assets">返回资产工作台</a>
+    </div>
+    <div class="audit-table">
+        <div class="audit-table-head">
+            <span>时间</span>
+            <span>动作</span>
+            <span>对象</span>
+            <span>操作者</span>
+            <span>Hash</span>
+        </div>
+        {% for event in data.events %}
+        <article class="audit-table-row">
+            <span>{{ event.created_at }}</span>
+            <strong>{{ event.action }}</strong>
+            <span>{{ event.target_type }}: {{ event.target_id }}</span>
+            <span>{{ event.actor }}</span>
+            <span>
+                {% if event.before_hash %}{{ event.before_hash[:8] }}{% else %}-{% endif %}
+                →
+                {% if event.after_hash %}{{ event.after_hash[:8] }}{% else %}-{% endif %}
+            </span>
+            <p>{{ event.message }}</p>
+        </article>
+        {% else %}
+        <div class="empty-state">
+            <strong>没有匹配的审计记录</strong>
+            <p>调整检索条件后重新查询。</p>
+        </div>
+        {% endfor %}
+    </div>
+</section>
+
+<section class="panel">
+    <div class="panel-head">
+        <h3>活跃编辑锁</h3>
+    </div>
+    <div class="audit-list">
+        {% for lock in data.edit_locks %}
+        <div class="audit-item">
+            <strong>{{ lock.asset_id }}</strong>
+            <span>{{ lock.actor }} · {{ lock.purpose }}</span>
+            <small>{{ lock.acquired_at }} 至 {{ lock.expires_at }}</small>
+        </div>
+        {% else %}
+        <p class="panel-note">当前没有活跃编辑锁。</p>
+        {% endfor %}
+    </div>
+</section>
+{% endblock %}
