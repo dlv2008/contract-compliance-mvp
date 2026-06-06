@@ -152,6 +152,7 @@ class ReportSnapshot(BaseModel):
     title: str
     summary: str
     recommendation: str
+    sections: list[dict] = Field(default_factory=list)
     generated_at: str
     version: int = 1
     report_type: str = "process_snapshot"

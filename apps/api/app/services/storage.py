@@ -24,6 +24,7 @@ from app.services.review_engine import (
     derive_decision,
     derive_overall_risk,
     derive_status,
+    rule_context_from_profile_snapshot,
 )
 from app.services.workflow_runs import WorkflowRunRepository
 
@@ -319,6 +320,7 @@ class TaskRepository:
             task.decision,
             report_type="delivery_report",
             generated_by=actor or "reviewer",
+            rule_context=rule_context_from_profile_snapshot(task.selected_profile_snapshot),
         ).model_copy(update={"version": previous_version + 1})
         trace = list(task.agent_trace)
         trace.append(
@@ -532,9 +534,12 @@ class TaskRepository:
         workflow_steps = build_workflow_steps(datetime.now(timezone.utc).isoformat(timespec="seconds"), status)
 
         previous_version = task.report_snapshot.version if task.report_snapshot else 0
-        report_snapshot = build_report_snapshot(task.name, active_risks, decision).model_copy(
-            update={"version": previous_version + 1}
-        )
+        report_snapshot = build_report_snapshot(
+            task.name,
+            active_risks,
+            decision,
+            rule_context=rule_context_from_profile_snapshot(task.selected_profile_snapshot),
+        ).model_copy(update={"version": previous_version + 1})
         return task.model_copy(
             update={
                 "status": status,
@@ -554,9 +559,12 @@ class TaskRepository:
         decision = TASK_DECISION_BY_ACTION[action.action_type]
         active_risks = [risk for risk in task.risks if risk.review_status != "rejected"]
         previous_version = task.report_snapshot.version if task.report_snapshot else 0
-        report_snapshot = build_report_snapshot(task.name, active_risks, decision).model_copy(
-            update={"version": previous_version + 1}
-        )
+        report_snapshot = build_report_snapshot(
+            task.name,
+            active_risks,
+            decision,
+            rule_context=rule_context_from_profile_snapshot(task.selected_profile_snapshot),
+        ).model_copy(update={"version": previous_version + 1})
         workflow_steps = build_workflow_steps(action.created_at, status)
         trace = list(task.agent_trace)
         trace.append(

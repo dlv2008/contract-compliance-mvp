@@ -140,6 +140,7 @@ def analyze_contract(
         semantic_risk = result.get("risk")
         if isinstance(semantic_risk, RiskFinding) and not risk_is_duplicate(semantic_risk, risks):
             risks.append(semantic_risk)
+    risks = apply_risk_message_templates(risks, rule_context=rule_context)
     risks.sort(key=lambda item: risk_priority(item.level), reverse=True)
     clauses = apply_clause_status(clauses, risks)
     extracted_fields = build_extracted_fields(contract_type, facts, rule_context=rule_context)
@@ -300,6 +301,7 @@ def build_review_payload(
             {
                 "level": risk.level,
                 "title": risk.title,
+                "message": risk.message,
                 "rule": risk.rule_id,
                 "source": risk_source(risk),
                 "source_label": risk_source_label(risk),
@@ -376,6 +378,7 @@ def build_review_payload(
                 "title": task.report_snapshot.title,
                 "summary": task.report_snapshot.summary,
                 "recommendation": task.report_snapshot.recommendation,
+                "sections": task.report_snapshot.sections,
                 "generated_at": task.report_snapshot.generated_at,
                 "version": task.report_snapshot.version,
                 "report_type": task.report_snapshot.report_type,
@@ -1635,6 +1638,46 @@ def build_risk(
     )
 
 
+def active_risk_message_template(rule_context: dict[str, Any] | None) -> dict[str, Any] | None:
+    templates = (rule_context or {}).get("risk_message_templates") or []
+    return templates[0] if templates else None
+
+
+def apply_risk_message_templates(
+    risks: list[RiskFinding],
+    *,
+    rule_context: dict[str, Any] | None = None,
+) -> list[RiskFinding]:
+    template = active_risk_message_template(rule_context)
+    if not template:
+        return risks
+    raw_template = str(template.get("template") or "{rule_title}: {reason} 建议：{action}")
+    return [
+        risk.model_copy(update={"message": render_risk_message_template(raw_template, risk)})
+        for risk in risks
+    ]
+
+
+def render_risk_message_template(template: str, risk: RiskFinding) -> str:
+    values = {
+        "rule_title": risk.title,
+        "title": risk.title,
+        "reason": risk.reason,
+        "action": risk.action,
+        "risk_level": risk.level,
+        "level": risk.level,
+        "rule_id": risk.rule_id,
+        "policy_reference_ids": "、".join(risk.policy_reference_ids),
+        "evidence_clause_ids": "、".join(risk.evidence_clause_ids) or "未定位",
+    }
+
+    def replace(match: re.Match[str]) -> str:
+        key = match.group(1).strip()
+        return str(values.get(key, match.group(0)))
+
+    return re.sub(r"\{([^{}]+)\}", replace, template)
+
+
 def build_extracted_fields(
     contract_type: str,
     facts: dict[str, dict[str, Any]],
@@ -1769,6 +1812,35 @@ def active_report_template(rule_context: dict[str, Any] | None) -> dict[str, Any
     templates = (rule_context or {}).get("report_templates") or []
     template = templates[-1] if templates else None
     return template if isinstance(template, dict) else None
+
+
+def rule_context_from_profile_snapshot(snapshot: dict | None) -> dict[str, Any]:
+    assets = (snapshot or {}).get("assets") if isinstance(snapshot, dict) else []
+    context: dict[str, list[dict[str, Any]]] = {
+        "risk_message_templates": [],
+        "report_templates": [],
+        "risk_evaluation_policies": [],
+    }
+    for asset in assets if isinstance(assets, list) else []:
+        if not isinstance(asset, dict):
+            continue
+        asset_type = asset.get("asset_type")
+        content = asset.get("content") if isinstance(asset.get("content"), dict) else {}
+        item = {
+            "asset_id": asset.get("asset_id"),
+            "asset_version": asset.get("version"),
+            "asset_content_hash": asset.get("content_hash"),
+            "schema_version": asset.get("schema_version"),
+            "name": asset.get("name"),
+            **content,
+        }
+        if asset_type == "risk_message_template":
+            context["risk_message_templates"].append(item)
+        if asset_type == "report_template":
+            context["report_templates"].append(item)
+        if asset_type == "risk_evaluation_policy":
+            context["risk_evaluation_policies"].append(item)
+    return context
 
 
 def derive_decision(overall_risk: str, risks: list[RiskFinding] | None = None) -> str:
@@ -2115,18 +2187,77 @@ def build_report_snapshot(
     high_count = sum(risk.level == "high" for risk in risks)
     medium_count = sum(risk.level == "medium" for risk in risks)
     template = active_report_template(rule_context)
-    template_name = template.get("name") if template else None
+    sections = build_report_sections(risks, decision, template)
     report_type_label = "交付报告" if report_type == "delivery_report" else "过程快照"
     title_suffix = "审查交付报告" if report_type == "delivery_report" else "审查报告快照"
     return ReportSnapshot(
         title=f"{name} {title_suffix}",
         summary=f"系统识别 {len(risks)} 条风险，其中高风险 {high_count} 条、中风险 {medium_count} 条。",
         recommendation=build_report_recommendation(risks, decision),
+        sections=sections,
         generated_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
         report_type=report_type,
         report_type_label=report_type_label,
         generated_by=generated_by,
     )
+
+
+DEFAULT_REPORT_SECTIONS = ["current_status", "summary", "recommendation", "rule_hits", "review_actions"]
+REPORT_SECTION_LABELS = {
+    "current_status": "当前状态",
+    "summary": "审查摘要",
+    "recommendation": "建议后继操作",
+    "rule_hits": "风险及规则命中",
+    "review_actions": "人工复核记录",
+    "fields": "结构化字段",
+    "clauses": "条款结构说明",
+    "policy_references": "制度依据",
+    "workflow": "执行过程留痕",
+}
+
+
+def build_report_sections(
+    risks: list[RiskFinding],
+    decision: str,
+    template: dict[str, Any] | None,
+) -> list[dict[str, str]]:
+    raw_sections = template.get("sections") if template else None
+    section_keys = [str(item) for item in raw_sections] if isinstance(raw_sections, list) and raw_sections else DEFAULT_REPORT_SECTIONS
+    template_name = str(template.get("name")) if template and template.get("name") else "默认报告模板"
+    return [
+        {
+            "key": key,
+            "label": REPORT_SECTION_LABELS.get(key, key),
+            "summary": render_report_section_summary(key, risks, decision),
+            "template": template_name,
+        }
+        for key in section_keys
+    ]
+
+
+def render_report_section_summary(key: str, risks: list[RiskFinding], decision: str) -> str:
+    high_count = sum(risk.level == "high" for risk in risks)
+    medium_count = sum(risk.level == "medium" for risk in risks)
+    if key == "current_status":
+        return f"当前结论：{DECISION_LABELS.get(decision, decision)}。"
+    if key == "summary":
+        return f"识别风险 {len(risks)} 条，其中高风险 {high_count} 条、中风险 {medium_count} 条。"
+    if key == "recommendation":
+        return build_report_recommendation(risks, decision)
+    if key == "rule_hits":
+        return "；".join(f"{risk.rule_id} {risk.title}" for risk in risks[:5]) or "未命中风险规则。"
+    if key == "review_actions":
+        return "人工复核动作将在交付报告生成后持续补充。"
+    if key == "fields":
+        return "结构化字段按当前配置集的 extraction_schema 和 extraction_rule 输出。"
+    if key == "clauses":
+        return "条款结构按当前配置集的 clause_parse_template 输出。"
+    if key == "policy_references":
+        policy_ids = sorted({policy_id for risk in risks for policy_id in risk.policy_reference_ids})
+        return "、".join(policy_ids) if policy_ids else "未引用制度依据。"
+    if key == "workflow":
+        return "执行过程以 WorkflowRun/StepRun 和 Agent trace 留痕。"
+    return "该章节由 report_template 定义，当前暂无专用渲染器。"
 
 
 def build_report_recommendation(risks: list[RiskFinding], decision: str) -> str:

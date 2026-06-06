@@ -501,6 +501,71 @@ def test_publish_profile_rejects_stale_dry_run_after_binding_change(client: Test
     assert "snapshot" in publish_response.json()["detail"]
 
 
+def test_risk_message_and_report_templates_drive_review_output(client: TestClient) -> None:
+    message_response = client.post(
+        "/api/assets",
+        json={
+            "asset_type": "risk_message_template",
+            "name": "Template driven risk message",
+            "content": {"template": "TEMPLATE::{rule_id}::{risk_level}::{reason}"},
+            "schema_version": "risk-message-template-v1",
+        },
+    )
+    report_response = client.post(
+        "/api/assets",
+        json={
+            "asset_type": "report_template",
+            "name": "Template driven report sections",
+            "content": {"sections": ["summary", "policy_references", "workflow"]},
+            "schema_version": "report-template-v1",
+        },
+    )
+    message_asset = message_response.json()["asset"]
+    report_asset = report_response.json()["asset"]
+    for asset in [message_asset, report_asset]:
+        assert client.post(f"/api/assets/{asset['id']}/approve", json={}).status_code == 200
+        publish_response = client.post(f"/api/assets/{asset['id']}/publish", json={})
+        assert publish_response.status_code == 200
+        asset.update(publish_response.json()["asset"])
+
+    clone_response = client.post(
+        "/api/review-profiles/profile-procurement-basic-v1/versions",
+        json={"name": "Template driven output profile"},
+    )
+    draft_profile = clone_response.json()["profile"]
+    for asset in [message_asset, report_asset]:
+        bind_response = client.post(
+            f"/api/review-profiles/{draft_profile['id']}/assets",
+            json={"asset_id": asset["id"], "binding_reason": "template output test"},
+        )
+        assert bind_response.status_code == 200
+
+    dry_run_profile_for_publish(client, draft_profile["id"])
+    publish_profile_response = client.post(f"/api/review-profiles/{draft_profile['id']}/publish", json={})
+    assert publish_profile_response.status_code == 200
+    active_profile = publish_profile_response.json()["profile"]
+
+    sample_path = sample_contract("采购合同-样本B-收款账户不一致风险版.md")
+    create_response = client.post(
+        "/api/tasks",
+        data={
+            "contract_name": "template driven output task",
+            "selected_profile_id": active_profile["id"],
+        },
+        files={"file": ("contract.md", sample_path.read_bytes(), "text/markdown")},
+    )
+    assert create_response.status_code == 201
+    task_id = create_response.json()["task"]["id"]
+    detail = client.get(f"/api/tasks/{task_id}").json()["task"]
+
+    assert any(risk["message"].startswith("TEMPLATE::") for risk in detail["risks"])
+    assert [section["key"] for section in detail["report"]["sections"]] == [
+        "summary",
+        "policy_references",
+        "workflow",
+    ]
+
+
 def test_asset_draft_editor_updates_and_validates_hard_rule(client: TestClient) -> None:
     draft_response = client.post(
         "/api/rule-drafts/generate",

@@ -1531,6 +1531,28 @@ button:disabled {
     background: rgba(255, 255, 255, 0.68);
 }
 
+.report-sections {
+    display: grid;
+    gap: 10px;
+    margin: 14px 0;
+}
+
+.report-sections article {
+    border-left: 3px solid rgba(36, 118, 93, 0.34);
+    padding: 8px 0 8px 12px;
+}
+
+.report-sections strong {
+    display: block;
+    margin-bottom: 4px;
+}
+
+.report-sections p {
+    margin: 0;
+    color: var(--muted);
+    font-size: 13px;
+}
+
 .report-generate-form textarea {
     width: 100%;
     min-width: 0;

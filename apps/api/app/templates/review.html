@@ -301,6 +301,16 @@
         <div>
             <p>{{ data.report.summary }}</p>
             <p class="risk-action">{{ data.report.recommendation }}</p>
+            {% if data.report.sections %}
+            <div class="report-sections">
+                {% for section in data.report.sections %}
+                <article>
+                    <strong>{{ section.label }}</strong>
+                    <p>{{ section.summary }}</p>
+                </article>
+                {% endfor %}
+            </div>
+            {% endif %}
             <dl class="report-meta">
                 <div>
                     <dt>生成时间</dt>
