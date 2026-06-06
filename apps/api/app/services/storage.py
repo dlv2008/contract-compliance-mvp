@@ -25,6 +25,7 @@ from app.services.review_engine import (
     derive_overall_risk,
     derive_status,
 )
+from app.services.workflow_runs import WorkflowRunRepository
 
 
 SUPPORTED_TEXT_EXTENSIONS = {".md", ".txt", ".text"}
@@ -118,6 +119,7 @@ class TaskRepository:
         )
         task = self._apply_profile_snapshot(task, selected_profile).model_copy(update={"stored_file": stored_file})
         task = self._write_report_snapshot(task)
+        WorkflowRunRepository(self.settings).record_from_task(task)
         if self._use_postgres():
             self._bootstrap_if_needed()
             self._postgres_store().upsert_task(task, event_message="uploaded contract and generated review snapshot")

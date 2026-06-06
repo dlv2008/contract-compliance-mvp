@@ -432,6 +432,11 @@ def test_profile_dry_run_api_does_not_create_task(client: TestClient) -> None:
     assert "task_snapshot" in dry_run
     assert dry_run["task_snapshot"]["id"] == dry_run["id"]
     assert client.get("/api/tasks").json()["total"] == before_total
+    workflow_response = client.get(f"/api/tasks/{dry_run['id']}/workflow-run")
+    assert workflow_response.status_code == 200
+    workflow_run = workflow_response.json()["workflow_run"]
+    assert workflow_run["run_type"] == "profile_dry_run"
+    assert len(workflow_run["step_runs"]) >= 5
 
     list_response = client.get("/api/review-profiles/profile-procurement-basic-v1/dry-runs")
     assert list_response.status_code == 200
@@ -1259,6 +1264,8 @@ def test_create_task_and_fetch_review_payload(client: TestClient) -> None:
     assert review_task["profile"]["id"] == "profile-procurement-basic-v1"
     assert review_task["profile"]["hard_rule_count"] >= 1
     assert len(review_task["workflow_steps"]) >= 5
+    assert review_task["workflow_run"]["status"] in {"succeeded", "waiting_human", "succeeded_with_warnings"}
+    assert len(review_task["workflow_run"]["step_runs"]) >= 5
     assert any(event["type"] == "rule.evaluate" for event in review_task["trace"])
     assert review_task["report"]["summary"]
 
@@ -1266,11 +1273,13 @@ def test_create_task_and_fetch_review_payload(client: TestClient) -> None:
     facts_response = client.get(f"/api/tasks/{task['id']}/facts")
     rule_hits_response = client.get(f"/api/tasks/{task['id']}/rule-hits")
     reports_response = client.get(f"/api/tasks/{task['id']}/report-snapshots")
+    workflow_response = client.get(f"/api/tasks/{task['id']}/workflow-run")
 
     assert clauses_response.status_code == 200
     assert facts_response.status_code == 200
     assert rule_hits_response.status_code == 200
     assert reports_response.status_code == 200
+    assert workflow_response.status_code == 200
     assert clauses_response.json()["items"][0]["clause_id"]
     assert any(item["fact_key"] == "payment.prepay_ratio" for item in facts_response.json()["items"])
     assert any(item["rule_id"] == "FIN-PUR-003" for item in rule_hits_response.json()["items"])

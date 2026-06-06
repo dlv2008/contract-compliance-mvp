@@ -1485,6 +1485,13 @@ button:disabled {
     font-size: 13px;
 }
 
+.workflow-step small {
+    grid-column: 2 / 4;
+    color: var(--muted);
+    font-size: 12px;
+    line-height: 1.45;
+}
+
 .workflow-done {
     border-color: rgba(47, 124, 99, 0.24);
 }

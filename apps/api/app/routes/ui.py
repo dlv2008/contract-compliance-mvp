@@ -13,6 +13,7 @@ from app.services.profile_dry_run import ProfileDryRunError, ProfileDryRunServic
 from app.services.ragflow import RagflowClient
 from app.services.review_engine import build_dashboard_payload, build_review_payload
 from app.services.storage import ContractUploadError, TaskRepository, TaskStorageError
+from app.services.workflow_runs import WorkflowRunRepository
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
@@ -531,6 +532,7 @@ def review(task_id: str, request: Request) -> HTMLResponse:
                 DatabaseProbeClient().probe(),
                 ObjectStore().probe(),
                 TaskRepository().list_report_snapshots(task_id),
+                WorkflowRunRepository().latest_for_task(task_id),
             ),
         },
     )

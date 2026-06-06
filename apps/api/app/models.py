@@ -96,6 +96,39 @@ class WorkflowStep(BaseModel):
     updated_at: str | None = None
 
 
+class StepRunRecord(BaseModel):
+    id: str
+    workflow_run_id: str
+    task_id: str
+    step_key: str
+    label: str
+    status: str
+    input_hash: str | None = None
+    output_summary: str | None = None
+    error: str | None = None
+    retry_count: int = 0
+    started_at: str | None = None
+    finished_at: str | None = None
+    updated_at: str | None = None
+    metadata: dict = Field(default_factory=dict)
+
+
+class WorkflowRunRecord(BaseModel):
+    id: str
+    task_id: str
+    run_type: str = "contract_review"
+    status: str
+    source: str = "analyze_contract"
+    input_hash: str | None = None
+    started_at: str
+    finished_at: str | None = None
+    updated_at: str | None = None
+    retry_count: int = 0
+    error: str | None = None
+    step_runs: list[StepRunRecord] = Field(default_factory=list)
+    metadata: dict = Field(default_factory=dict)
+
+
 class AgentTraceEvent(BaseModel):
     at: str
     type: str

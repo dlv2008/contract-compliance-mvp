@@ -12,6 +12,7 @@ from app.config import Settings, get_settings
 from app.models import ProfileDryRunRecord, ReviewProfile
 from app.services.assets import AssetNotFoundError, AssetRegistry
 from app.services.review_engine import analyze_contract
+from app.services.workflow_runs import WorkflowRunRepository
 
 
 class ProfileDryRunError(ValueError):
@@ -140,6 +141,7 @@ class ProfileDryRunService:
                 "selected_profile_snapshot": self.registry.freeze_profile(profile),
             }
         )
+        WorkflowRunRepository(self.settings).record_from_task(task, run_type="profile_dry_run")
         record = self._build_record(dry_run_id, profile, task, source_filename, actor)
         records = [item for item in self.store.load_records() if item.id != record.id]
         records.append(record)

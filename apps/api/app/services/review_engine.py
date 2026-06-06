@@ -218,6 +218,7 @@ def build_review_payload(
     database: DatabaseProbe | None = None,
     object_storage: ObjectStorageProbe | None = None,
     report_snapshots: list[dict] | None = None,
+    workflow_run: Any | None = None,
 ) -> dict[str, Any]:
     high_count = sum(risk.level == "high" for risk in task.risks)
     resolved_count = sum(risk.review_status in {"confirmed", "rejected", "revised"} for risk in task.risks)
@@ -334,6 +335,33 @@ def build_review_payload(
             }
             for step in task.workflow_steps
         ],
+        "workflow_run": (
+            {
+                "id": workflow_run.id,
+                "status": workflow_run.status,
+                "run_type": workflow_run.run_type,
+                "source": workflow_run.source,
+                "input_hash": workflow_run.input_hash,
+                "started_at": workflow_run.started_at,
+                "finished_at": workflow_run.finished_at,
+                "step_runs": [
+                    {
+                        "id": step.id,
+                        "step_key": step.step_key,
+                        "label": step.label,
+                        "status": step.status,
+                        "input_hash": step.input_hash,
+                        "output_summary": step.output_summary,
+                        "error": step.error,
+                        "retry_count": step.retry_count,
+                        "updated_at": step.updated_at,
+                    }
+                    for step in workflow_run.step_runs
+                ],
+            }
+            if workflow_run
+            else None
+        ),
         "trace": [
             {
                 "at": event.at,

@@ -246,8 +246,21 @@
     <article class="panel">
         <div class="panel-head">
             <h3>流程状态</h3>
+            {% if data.workflow_run %}
+            <span class="state-outline">{{ data.workflow_run.status }} · {{ data.workflow_run.source }}</span>
+            {% endif %}
         </div>
         <div class="workflow-list">
+            {% if data.workflow_run %}
+            {% for step in data.workflow_run.step_runs %}
+            <div class="workflow-step workflow-{{ step.status }}">
+                <span>{{ loop.index }}</span>
+                <strong>{{ step.label }}</strong>
+                <em>{{ step.status }}</em>
+                <small>{{ step.output_summary }}</small>
+            </div>
+            {% endfor %}
+            {% else %}
             {% for step in data.workflow_steps %}
             <div class="workflow-step workflow-{{ step.status }}">
                 <span>{{ loop.index }}</span>
@@ -255,6 +268,7 @@
                 <em>{{ step.status }}</em>
             </div>
             {% endfor %}
+            {% endif %}
         </div>
     </article>
 
