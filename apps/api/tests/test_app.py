@@ -1,5 +1,6 @@
 from pathlib import Path
 import sys
+import time
 
 import pytest
 from fastapi.testclient import TestClient
@@ -1460,12 +1461,85 @@ def test_create_task_and_fetch_review_payload(client: TestClient) -> None:
     assert retry_payload["workflow_run"]["source"] == "analyze_contract.v2.executor.retry"
     assert any(event["type"] == "workflow.retry" for event in retry_payload["task"]["trace"])
 
-    resume_response = client.post(f"/api/tasks/{task['id']}/workflow-run/resume")
+    resume_response = client.post(f"/api/tasks/{task['id']}/workflow-run/resume?resume_from_step=evaluating")
     assert resume_response.status_code == 200
     resume_payload = resume_response.json()
     assert resume_payload["workflow_run"]["source"] == "analyze_contract.v2.executor.resume"
     assert resume_payload["workflow_run"]["metadata"]["checkpoint_count"] >= 5
+    assert resume_payload["workflow_run"]["metadata"]["resume_from_step"] == "evaluating"
+    assert set(resume_payload["workflow_run"]["metadata"]["reused_checkpoint_steps"]) == {
+        "uploaded",
+        "parsing",
+        "extracting",
+    }
+    execution_plan = {
+        item["step_key"]: item for item in resume_payload["workflow_run"]["metadata"]["execution_plan"]
+    }
+    assert execution_plan["parsing"]["action"] == "reuse_checkpoint"
+    assert execution_plan["parsing"]["status"] == "skipped"
+    assert execution_plan["evaluating"]["action"] == "execute"
+    resumed_parsing_step = next(
+        item for item in resume_payload["workflow_run"]["step_runs"] if item["step_key"] == "parsing"
+    )
+    resumed_evaluating_step = next(
+        item for item in resume_payload["workflow_run"]["step_runs"] if item["step_key"] == "evaluating"
+    )
+    assert resumed_parsing_step["status"] == "skipped"
+    assert resumed_parsing_step["metadata"]["execution_mode"] == "checkpoint_reused"
+    assert resumed_parsing_step["metadata"]["reused_checkpoint"] is True
+    assert resumed_parsing_step["metadata"]["worker_status"] == "skipped_by_checkpoint"
+    assert resumed_parsing_step["metadata"]["physical_skip"] is True
+    assert resumed_evaluating_step["metadata"]["execution_mode"] == "resumed_execution"
+    assert resumed_evaluating_step["metadata"]["reused_checkpoint"] is False
+    assert resumed_evaluating_step["metadata"]["worker_status"] == "executed_inline"
     assert any(event["type"] == "workflow.resume" for event in resume_payload["task"]["trace"])
+
+    workflow_status_response = client.get(f"/api/tasks/{task['id']}/workflow-run/status")
+    assert workflow_status_response.status_code == 200
+    workflow_status = workflow_status_response.json()["workflow_status"]
+    assert workflow_status["worker_mode"] == "inline_plan_executor"
+    assert workflow_status["worker_status"] == "completed"
+    assert workflow_status["progress"]["percent"] == 100
+    status_results = {item["step_key"]: item for item in workflow_status["worker_results"]}
+    assert status_results["parsing"]["worker_status"] == "skipped_by_checkpoint"
+    assert status_results["evaluating"]["worker_status"] == "executed_inline"
+
+    queue_response = client.post(f"/api/tasks/{task['id']}/workflow-run/queue")
+    assert queue_response.status_code == 200
+    queued_run = queue_response.json()["workflow_run"]
+    assert queued_run["source"] == "analyze_contract.v3.async_worker"
+    assert queued_run["status"] == "queued"
+    assert queued_run["metadata"]["worker_mode"] == "async_plan_worker"
+    assert queued_run["metadata"]["worker_status"] == "queued"
+
+    start_response = client.post(f"/api/tasks/{task['id']}/workflow-run/worker/start")
+    assert start_response.status_code == 200
+    assert start_response.json()["workflow_run"]["metadata"]["worker_status"] == "running"
+
+    pause_response = client.post(f"/api/tasks/{task['id']}/workflow-run/worker/pause")
+    assert pause_response.status_code == 200
+    assert pause_response.json()["workflow_run"]["metadata"]["worker_status"] == "paused"
+
+    worker_resume_response = client.post(f"/api/tasks/{task['id']}/workflow-run/worker/resume")
+    assert worker_resume_response.status_code == 200
+    assert worker_resume_response.json()["workflow_run"]["metadata"]["worker_status"] in {"running", "completed"}
+
+    completed_run = None
+    for _ in range(20):
+        polled_status = client.get(f"/api/tasks/{task['id']}/workflow-run/status")
+        assert polled_status.status_code == 200
+        workflow_status = polled_status.json()["workflow_status"]
+        if workflow_status["worker_status"] == "completed":
+            completed_run = client.get(f"/api/tasks/{task['id']}/workflow-run").json()["workflow_run"]
+            break
+        time.sleep(0.05)
+    assert completed_run is not None
+    assert completed_run["status"] != "running"
+    assert completed_run["metadata"]["worker_status"] == "completed"
+    completed_results = {item["step_key"]: item for item in completed_run["metadata"]["worker_results"]}
+    assert completed_results["parsing"]["worker_status"] == "skipped_by_checkpoint"
+    assert completed_results["evaluating"]["worker_status"] == "executed_by_background_worker"
+    assert completed_results["parsing"]["artifact_reused"] is True
 
     report_item = reports_response.json()["items"][0]
     assert report_item["file_path"]

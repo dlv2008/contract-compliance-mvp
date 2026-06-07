@@ -256,11 +256,14 @@
                 <strong>Checkpoint {{ data.workflow_run.checkpoint_count }}</strong>
                 <small>
                     {% if data.workflow_run.resume_from_step %}
-                    上次恢复从 {{ data.workflow_run.resume_from_step }} 开始
+                    上次恢复从 {{ data.workflow_run.resume_from_step }} 开始，复用 {{ data.workflow_run.reused_checkpoint_count }} 个 checkpoint
                     {% else %}
                     已记录可追溯执行检查点
                     {% endif %}
                 </small>
+                {% if data.workflow_run.worker_status %}
+                <small>worker: {{ data.workflow_run.worker_mode }} · {{ data.workflow_run.worker_status }}</small>
+                {% endif %}
             </div>
             {% if data.workflow_run.can_resume %}
             <form class="inline-workflow-action" action="/reviews/{{ data.task.id }}/workflow-run/resume" method="post">
@@ -281,6 +284,9 @@
                 <small>{{ step.output_summary }}</small>
                 {% if step.checkpoint_saved %}
                 <small class="workflow-checkpoint">checkpoint: {{ step.checkpoint_status or "saved" }}</small>
+                {% endif %}
+                {% if step.reused_checkpoint %}
+                <small class="workflow-checkpoint">已复用恢复前 checkpoint</small>
                 {% endif %}
                 {% if step.error %}
                 <small class="workflow-error">{{ step.error }}</small>
@@ -305,6 +311,20 @@
             {% endfor %}
             {% endif %}
         </div>
+        {% if data.workflow_run.execution_plan %}
+        <details class="workflow-plan-details">
+            <summary>执行计划</summary>
+            <div class="workflow-plan-list">
+                {% for item in data.workflow_run.execution_plan %}
+                <div class="workflow-plan-item workflow-plan-{{ item.action }}">
+                    <strong>{{ item.label }}</strong>
+                    <span>{{ item.action }} · {{ item.status }}</span>
+                    <small>{{ item.reason }}</small>
+                </div>
+                {% endfor %}
+            </div>
+        </details>
+        {% endif %}
     </article>
 
     <article class="panel">

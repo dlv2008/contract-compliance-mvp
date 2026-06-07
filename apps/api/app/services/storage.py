@@ -431,6 +431,7 @@ class TaskRepository:
             created_at=task.created_at,
             rule_context=rule_context,
             resume_from_step=requested_step,
+            existing_checkpoints=(previous_run.metadata.get("checkpoints") if previous_run else None),
         )
         now = datetime.now(timezone.utc).isoformat(timespec="microseconds")
         trace = list(resumed_task.agent_trace)

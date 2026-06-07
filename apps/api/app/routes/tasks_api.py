@@ -12,7 +12,7 @@ from app.services.profile_dry_run import ProfileDryRunError, ProfileDryRunServic
 from app.services.ragflow import RagflowClient
 from app.services.review_engine import build_review_payload, build_task_summary
 from app.services.storage import ContractUploadError, TaskRepository, TaskStorageError
-from app.services.workflow_runs import WorkflowRunRepository
+from app.services.workflow_runs import WorkflowRunError, WorkflowRunRepository
 
 
 router = APIRouter()
@@ -542,6 +542,32 @@ def get_task_workflow_run(task_id: str) -> dict:
     workflow_run = WorkflowRunRepository().latest_for_task(task_id)
     if workflow_run is None:
         raise HTTPException(status_code=404, detail="Workflow run does not exist.")
+    return {"workflow_run": workflow_run.model_dump()}
+
+
+@router.get("/tasks/{task_id}/workflow-run/status")
+def get_task_workflow_run_status(task_id: str) -> dict:
+    status = WorkflowRunRepository().status_payload(task_id)
+    if status is None:
+        raise HTTPException(status_code=404, detail="Workflow run does not exist.")
+    return {"workflow_status": status}
+
+
+@router.post("/tasks/{task_id}/workflow-run/queue")
+def queue_task_workflow_run(task_id: str) -> dict:
+    try:
+        workflow_run = WorkflowRunRepository().queue_worker_run(task_id)
+    except WorkflowRunError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {"workflow_run": workflow_run.model_dump()}
+
+
+@router.post("/tasks/{task_id}/workflow-run/worker/{action}")
+def transition_task_workflow_worker(task_id: str, action: str) -> dict:
+    try:
+        workflow_run = WorkflowRunRepository().transition_worker(task_id, action)
+    except WorkflowRunError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"workflow_run": workflow_run.model_dump()}
 
 

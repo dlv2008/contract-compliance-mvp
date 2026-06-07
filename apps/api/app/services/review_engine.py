@@ -112,6 +112,7 @@ TIMELINE = [
     "输出风险卡片并进入人工复核",
 ]
 CLAUSE_HEADER_RE = re.compile(r"^【(?P<id>[A-Z]\d{3})】(?P<title>.+?)\s*$", re.MULTILINE)
+WORKFLOW_STEP_ORDER = ["uploaded", "parsing", "extracting", "evaluating", "semantic_rules", "review", "report"]
 
 
 class ReviewRunExecutor:
@@ -125,6 +126,7 @@ class ReviewRunExecutor:
         created_at: str | None = None,
         rule_context: dict[str, Any] | None = None,
         resume_from_step: str | None = None,
+        existing_checkpoints: list[dict[str, Any]] | None = None,
     ) -> None:
         self.task_id = task_id
         self.source_filename = source_filename
@@ -133,6 +135,11 @@ class ReviewRunExecutor:
         self.created_at = created_at or datetime.now(timezone.utc).isoformat(timespec="seconds")
         self.rule_context = rule_context
         self.resume_from_step = resume_from_step
+        self.existing_checkpoints = {
+            item.get("step_key"): item
+            for item in (existing_checkpoints or [])
+            if isinstance(item, dict) and item.get("step_key")
+        }
         self.checkpoint_events: list[AgentTraceEvent] = []
 
     def run(self) -> TaskRecord:
@@ -260,6 +267,8 @@ class ReviewRunExecutor:
             "output_summary": output_summary,
             "resume_mode": "checkpoint",
             "resume_from_step": self.resume_from_step,
+            "execution_mode": self._execution_mode_for_step(step_key),
+            "reused_checkpoint": self._can_reuse_checkpoint(step_key),
         }
         if extra_payload:
             payload.update(extra_payload)
@@ -267,10 +276,29 @@ class ReviewRunExecutor:
             AgentTraceEvent(
                 at=self.created_at,
                 type="workflow.checkpoint",
-                message=f"Checkpoint saved for {step_key}.",
+                message=(
+                    f"Checkpoint reused for {step_key}."
+                    if payload["reused_checkpoint"]
+                    else f"Checkpoint saved for {step_key}."
+                ),
                 payload=payload,
             )
         )
+
+    def _execution_mode_for_step(self, step_key: str) -> str:
+        if self._can_reuse_checkpoint(step_key):
+            return "checkpoint_reused"
+        if self.resume_from_step:
+            return "resumed_execution"
+        return "fresh_execution"
+
+    def _can_reuse_checkpoint(self, step_key: str) -> bool:
+        if not self.resume_from_step or step_key not in self.existing_checkpoints:
+            return False
+        try:
+            return WORKFLOW_STEP_ORDER.index(step_key) < WORKFLOW_STEP_ORDER.index(self.resume_from_step)
+        except ValueError:
+            return False
 
 
 def analyze_contract(
@@ -281,6 +309,7 @@ def analyze_contract(
     created_at: str | None = None,
     rule_context: dict[str, Any] | None = None,
     resume_from_step: str | None = None,
+    existing_checkpoints: list[dict[str, Any]] | None = None,
 ) -> TaskRecord:
     return ReviewRunExecutor(
         task_id=task_id,
@@ -290,6 +319,7 @@ def analyze_contract(
         created_at=created_at,
         rule_context=rule_context,
         resume_from_step=resume_from_step,
+        existing_checkpoints=existing_checkpoints,
     ).run()
 
 
@@ -459,6 +489,12 @@ def build_review_payload(
                 "retry_count": workflow_run.retry_count,
                 "resume_from_step": workflow_run.metadata.get("resume_from_step"),
                 "checkpoint_count": workflow_run.metadata.get("checkpoint_count", 0),
+                "reused_checkpoint_count": workflow_run.metadata.get("reused_checkpoint_count", 0),
+                "reused_checkpoint_steps": workflow_run.metadata.get("reused_checkpoint_steps", []),
+                "execution_plan": workflow_run.metadata.get("execution_plan", []),
+                "worker_mode": workflow_run.metadata.get("worker_mode"),
+                "worker_status": workflow_run.metadata.get("worker_status"),
+                "worker_results": workflow_run.metadata.get("worker_results", []),
                 "can_resume": not task.review_actions,
                 "step_runs": [
                     {
@@ -476,6 +512,8 @@ def build_review_payload(
                         "checkpoint_status": step.metadata.get("checkpoint_status"),
                         "resume_mode": step.metadata.get("resume_mode"),
                         "resume_from_step": step.metadata.get("resume_from_step"),
+                        "execution_mode": step.metadata.get("execution_mode"),
+                        "reused_checkpoint": bool(step.metadata.get("reused_checkpoint")),
                         "updated_at": step.updated_at,
                     }
                     for step in workflow_run.step_runs

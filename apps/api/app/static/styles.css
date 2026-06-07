@@ -1570,6 +1570,44 @@ button:disabled {
     color: var(--muted);
 }
 
+.workflow-plan-details {
+    margin-top: 12px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    padding: 10px 12px;
+    background: #fff;
+}
+
+.workflow-plan-details summary {
+    cursor: pointer;
+    font-weight: 800;
+}
+
+.workflow-plan-list {
+    display: grid;
+    gap: 8px;
+    margin-top: 10px;
+}
+
+.workflow-plan-item {
+    display: grid;
+    gap: 3px;
+    padding: 9px 10px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+}
+
+.workflow-plan-item span,
+.workflow-plan-item small {
+    color: var(--muted);
+    font-size: 12px;
+}
+
+.workflow-plan-reuse_checkpoint {
+    border-color: #c6d8ff;
+    background: #f4f7ff;
+}
+
 .workflow-step,
 .trace-item {
     display: grid;
